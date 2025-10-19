@@ -1,0 +1,796 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("APP_DATABASE_URL")
+}
+
+// User Management
+model User {
+  id         String   @id @default(cuid())
+  email      String   @unique
+  phone      String?  @unique
+  password   String
+  firstName  String
+  lastName   String
+  role       UserRole @default(USER)
+  isVerified Boolean  @default(false)
+  isActive   Boolean  @default(true)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  // Profile information
+  avatar      String?
+  dateOfBirth DateTime?
+
+  // Relationships
+  addresses       Address[]
+  rentals         Rental[]
+  purchases       Purchase[]
+  swapRequests    SwapRequest[]
+  reviews         Review[]
+  cart            CartItem[]
+  notifications   Notification[]
+  UserSettings    UserSettings?    @relation(fields: [userSettingsId], references: [id])
+  Device          Device[]
+  Token           Token[]
+  UserOAuth       UserOAuth?       @relation(fields: [userOAuthId], references: [id])
+  userOAuthId     Int?
+  userSettingsId  Int?
+  UserPreferences UserPreferences?
+
+  @@map("users")
+}
+
+model Address {
+  id        String      @id @default(cuid())
+  userId    String
+  type      AddressType @default(HOME)
+  street    String
+  city      String
+  state     String
+  zipCode   String
+  country   String      @default("Pakistan")
+  isDefault Boolean     @default(false)
+
+  // Relationships
+  user       User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  deliveries Delivery[]
+
+  @@map("addresses")
+}
+
+// Nursery Management
+model Nursery {
+  id          String  @id @default(cuid())
+  name        String
+  email       String  @unique
+  phone       String
+  password    String
+  description String?
+  logo        String?
+  isActive    Boolean @default(true)
+  isVerified  Boolean @default(false)
+
+  // Business information
+  businessLicense String?
+  taxId           String?
+  rating          Float   @default(0)
+  totalReviews    Int     @default(0)
+
+  // Location
+  address   String
+  city      String
+  state     String
+  zipCode   String
+  latitude  Float?
+  longitude Float?
+
+  // Service areas (JSON array of zipcodes/areas they serve)
+  serviceAreas Json?
+
+  // Settings
+  deliveryFee      Float @default(0)
+  minimumOrder     Float @default(0)
+  maxDeliveryRange Int   @default(10) // in kilometers
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relationships
+  plants            Plant[]
+  staff             Staff[]
+  rentals           Rental[]
+  purchases         Purchase[]
+  maintenanceVisits MaintenanceVisit[]
+  commissions       Commission[]
+  reviews           Review[]
+
+  @@map("nurseries")
+}
+
+model Staff {
+  id        String    @id @default(cuid())
+  nurseryId String
+  name      String
+  phone     String
+  email     String?
+  role      StaffRole @default(CARE_TAKER)
+  isActive  Boolean   @default(true)
+
+  // Care staff specific
+  expertise       Json? // Array of plant types they specialize in
+  maxVisitsPerDay Int   @default(8)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relationships
+  nursery           Nursery            @relation(fields: [nurseryId], references: [id], onDelete: Cascade)
+  maintenanceVisits MaintenanceVisit[]
+
+  @@map("staff")
+}
+
+// Plant Management
+model Plant {
+  id          String        @id @default(cuid())
+  nurseryId   String
+  name        String
+  description String?
+  category    PlantCategory
+
+  // Plant details
+  scientificName    String?
+  size              PlantSize
+  careLevel         CareLevel
+  lightRequirement  LightRequirement
+  wateringFrequency Int // days between watering
+  isPetSafe         Boolean          @default(false)
+  isIndoor          Boolean          @default(true)
+
+  // Pricing
+  purchasePrice   Float
+  rentalPrice     Float // per week
+  securityDeposit Float
+
+  // Inventory
+  totalStock     Int @default(1)
+  availableStock Int @default(1)
+
+  // Media
+  images           Json // Array of image URLs
+  careInstructions String?
+
+  // Status
+  isActive   Boolean @default(true)
+  isFeatured Boolean @default(false)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relationships
+  nursery      Nursery        @relation(fields: [nurseryId], references: [id], onDelete: Cascade)
+  rentals      Rental[]
+  purchases    Purchase[]
+  cartItems    CartItem[]
+  swapRequests SwapRequest[]
+  reviews      Review[]
+  PurchaseItem PurchaseItem[]
+
+  @@map("plants")
+}
+
+// Shopping Cart
+model CartItem {
+  id       String    @id @default(cuid())
+  userId   String
+  plantId  String
+  quantity Int       @default(1)
+  type     OrderType // RENTAL or PURCHASE
+
+  // Rental specific
+  rentalDuration Int? // in weeks
+  serviceType    ServiceType?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relationships
+  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  plant Plant @relation(fields: [plantId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, plantId, type])
+  @@map("cart_items")
+}
+
+// Orders & Rentals
+model Rental {
+  id        String @id @default(cuid())
+  userId    String
+  nurseryId String
+  plantId   String
+
+  // Rental details
+  duration    Int // in weeks
+  serviceType ServiceType
+  status      RentalStatus @default(PENDING)
+
+  // Pricing
+  rentalPrice      Float
+  maintenancePrice Float @default(0)
+  securityDeposit  Float
+  totalAmount      Float
+
+  // Dates
+  startDate   DateTime
+  endDate     DateTime
+  deliveredAt DateTime?
+  returnedAt  DateTime?
+
+  // Addresses
+  deliveryAddress Json
+  pickupAddress   Json?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relationships
+  user                User                 @relation(fields: [userId], references: [id])
+  nursery             Nursery              @relation(fields: [nurseryId], references: [id])
+  plant               Plant                @relation(fields: [plantId], references: [id])
+  payments            Payment[]
+  delivery            Delivery?
+  maintenanceSchedule MaintenanceSchedule?
+  swapRequests        SwapRequest[]
+
+  @@map("rentals")
+}
+
+model Purchase {
+  id        String         @id @default(cuid())
+  userId    String
+  nurseryId String
+  status    PurchaseStatus @default(PENDING)
+
+  // Pricing
+  subtotal    Float
+  deliveryFee Float @default(0)
+  tax         Float @default(0)
+  totalAmount Float
+
+  // Delivery
+  deliveryAddress Json
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relationships
+  user     User           @relation(fields: [userId], references: [id])
+  nursery  Nursery        @relation(fields: [nurseryId], references: [id])
+  items    PurchaseItem[]
+  payments Payment[]
+  delivery Delivery?
+  Plant    Plant?         @relation(fields: [plantId], references: [id])
+  plantId  String?
+
+  @@map("purchases")
+}
+
+model PurchaseItem {
+  id         String @id @default(cuid())
+  purchaseId String
+  plantId    String
+  quantity   Int
+  unitPrice  Float
+  totalPrice Float
+
+  // Relationships
+  purchase Purchase @relation(fields: [purchaseId], references: [id], onDelete: Cascade)
+  plant    Plant    @relation(fields: [plantId], references: [id])
+
+  @@map("purchase_items")
+}
+
+// Maintenance System
+model MaintenanceSchedule {
+  id        String  @id @default(cuid())
+  rentalId  String  @unique
+  frequency Int // visits per week (2 or 3)
+  isActive  Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relationships
+  rental Rental             @relation(fields: [rentalId], references: [id], onDelete: Cascade)
+  visits MaintenanceVisit[]
+
+  @@map("maintenance_schedules")
+}
+
+model MaintenanceVisit {
+  id         String  @id @default(cuid())
+  scheduleId String
+  nurseryId  String
+  staffId    String?
+
+  // Visit details
+  scheduledDate DateTime
+  completedAt   DateTime?
+  status        VisitStatus @default(SCHEDULED)
+
+  // Visit data
+  plantCondition PlantCondition?
+  watered        Boolean         @default(false)
+  pruned         Boolean         @default(false)
+  fertilized     Boolean         @default(false)
+  issues         String? // Any problems noticed
+  photos         Json? // Array of photo URLs
+  notes          String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relationships
+  schedule MaintenanceSchedule @relation(fields: [scheduleId], references: [id], onDelete: Cascade)
+  nursery  Nursery             @relation(fields: [nurseryId], references: [id])
+  staff    Staff?              @relation(fields: [staffId], references: [id])
+
+  @@map("maintenance_visits")
+}
+
+// Swap System
+model SwapRequest {
+  id       String     @id @default(cuid())
+  userId   String
+  rentalId String
+  plantId  String // current plant
+  reason   String
+  status   SwapStatus @default(PENDING)
+
+  // Replacement options provided by nursery
+  replacementOptions Json? // Array of plant IDs offered as replacements
+  selectedPlantId    String? // Plant ID user selected
+
+  // Swap details
+  scheduledDate DateTime?
+  completedAt   DateTime?
+  notes         String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relationships
+  user   User   @relation(fields: [userId], references: [id])
+  rental Rental @relation(fields: [rentalId], references: [id])
+  plant  Plant  @relation(fields: [plantId], references: [id])
+
+  @@map("swap_requests")
+}
+
+// Payment System
+model Payment {
+  id     String        @id @default(cuid())
+  userId String
+  type   PaymentType
+  status PaymentStatus @default(PENDING)
+
+  // Payment details
+  amount   Float
+  currency String        @default("PKR")
+  method   PaymentMethod
+
+  // External references
+  stripePaymentIntentId String?
+  transactionId         String?
+
+  // Order references
+  rentalId   String?
+  purchaseId String?
+
+  // Metadata
+  metadata      Json?
+  failureReason String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relationships
+  rental   Rental?   @relation(fields: [rentalId], references: [id])
+  purchase Purchase? @relation(fields: [purchaseId], references: [id])
+
+  @@map("payments")
+}
+
+model UserPreferences {
+  id     String @id @default(cuid())
+  userId String @unique
+
+  // Notification preferences
+  emailNotifications Boolean @default(true)
+  smsNotifications   Boolean @default(false)
+  pushNotifications  Boolean @default(true)
+  marketingEmails    Boolean @default(false)
+  rentalReminders    Boolean @default(true)
+  maintenanceUpdates Boolean @default(true)
+
+  // App preferences
+  language              String @default("en")
+  theme                 String @default("light")
+  currency              String @default("PKR")
+  defaultDeliveryRadius Int    @default(10)
+
+  // Plant preferences
+  preferredCategories Json @default("[]")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relationships
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("user_preferences")
+}
+
+// Delivery System
+model Delivery {
+  id     String         @id @default(cuid())
+  type   DeliveryType
+  status DeliveryStatus @default(SCHEDULED)
+
+  // Delivery details
+  scheduledDate DateTime
+  deliveredAt   DateTime?
+  address       Json
+  instructions  String?
+
+  // References
+  rentalId   String? @unique
+  purchaseId String? @unique
+
+  // Delivery person details
+  driverName  String?
+  driverPhone String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relationships
+  rental          Rental?   @relation(fields: [rentalId], references: [id])
+  purchase        Purchase? @relation(fields: [purchaseId], references: [id])
+  deliveryAddress Address   @relation(fields: [addressId], references: [id])
+  addressId       String
+
+  @@map("deliveries")
+}
+
+// Commission & Analytics
+model Commission {
+  id        String         @id @default(cuid())
+  nurseryId String
+  type      CommissionType
+
+  // Financial details
+  orderAmount      Float
+  commissionRate   Float // percentage
+  commissionAmount Float
+  status           CommissionStatus @default(PENDING)
+
+  // References
+  rentalId   String?
+  purchaseId String?
+
+  // Payout details
+  paidAt    DateTime?
+  reference String? // Payout reference
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relationships
+  nursery Nursery @relation(fields: [nurseryId], references: [id])
+
+  @@map("commissions")
+}
+
+// Reviews & Ratings
+model Review {
+  id        String     @id @default(cuid())
+  userId    String
+  nurseryId String?
+  plantId   String?
+  type      ReviewType
+
+  rating  Int // 1-5 stars
+  title   String?
+  comment String?
+
+  // References
+  rentalId   String?
+  purchaseId String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relationships
+  user    User     @relation(fields: [userId], references: [id])
+  nursery Nursery? @relation(fields: [nurseryId], references: [id])
+  plant   Plant?   @relation(fields: [plantId], references: [id])
+
+  @@map("reviews")
+}
+
+// Notifications
+model Notification {
+  id      String           @id @default(cuid())
+  userId  String
+  type    NotificationType
+  title   String
+  message String
+  data    Json? // Additional data for the notification
+
+  isRead Boolean @default(false)
+
+  createdAt DateTime @default(now())
+
+  // Relationships
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("notifications")
+}
+
+model UserSettings {
+  id                   Int       @id @default(autoincrement())
+  notificationsEnabled Boolean   @default(true)
+  userId               Int       @unique
+  createdAt            DateTime  @default(now()) @db.Timestamptz()
+  updatedAt            DateTime  @default(now()) @updatedAt @db.Timestamptz()
+  deletedAt            DateTime? @db.Timestamptz()
+  User                 User[]
+}
+
+enum DeviceType {
+  WEB
+  ANDROID
+  IOS
+}
+
+model Device {
+  id           Int        @id @default(autoincrement())
+  uuid         String     @default(uuid())
+  userAgent    String?
+  type         DeviceType @default(ANDROID)
+  userIdDevice Int
+  createdAt    DateTime   @default(now()) @db.Timestamptz()
+  updatedAt    DateTime   @default(now()) @updatedAt @db.Timestamptz()
+  deletedAt    DateTime?  @db.Timestamptz()
+  userId       String? // Changed from Int? to String? to match User model
+  User         User?      @relation(fields: [userId], references: [id])
+}
+
+enum TokenReason {
+  FORGOT_PASSWORD
+  RESET_PASSWORD
+  VERIFICATION
+  CHANGE_PASSWORD
+}
+
+model Token {
+  id          Int         @id @default(autoincrement())
+  uuid        String      @default(uuid())
+  code        String
+  reason      TokenReason
+  userIdToken Int?
+  createdAt   DateTime    @default(now()) @db.Timestamptz()
+  updatedAt   DateTime    @default(now()) @updatedAt @db.Timestamptz()
+  deletedAt   DateTime?   @db.Timestamptz()
+  userId      String? // Changed from Int? to String? to match User model
+  User        User?       @relation(fields: [userId], references: [id])
+}
+
+enum MediaType {
+  IMAGE
+  VIDEO
+  DOCUMENT
+  ARCHIVE
+  OTHER
+}
+
+enum MediaStatus {
+  UPLOADING
+  READY
+  STALE
+}
+
+enum MediaAccess {
+  PUBLIC
+  PRIVATE
+}
+
+// ENUMS
+enum UserRole {
+  USER
+  ADMIN
+}
+
+enum AddressType {
+  HOME
+  OFFICE
+  OTHER
+}
+
+enum StaffRole {
+  CARE_TAKER
+  DELIVERY
+  MANAGER
+}
+
+enum PlantCategory {
+  INDOOR
+  OUTDOOR
+  SUCCULENTS
+  FLOWERING
+  FOLIAGE
+  HERBS
+  TREES
+  SHRUBS
+}
+
+enum PlantSize {
+  SMALL
+  MEDIUM
+  LARGE
+  EXTRA_LARGE
+}
+
+enum CareLevel {
+  EASY
+  MODERATE
+  DIFFICULT
+}
+
+enum LightRequirement {
+  LOW
+  MEDIUM
+  HIGH
+  BRIGHT_INDIRECT
+}
+
+enum OrderType {
+  RENTAL
+  PURCHASE
+}
+
+enum ServiceType {
+  BASIC
+  PREMIUM
+}
+
+enum RentalStatus {
+  PENDING
+  CONFIRMED
+  DELIVERED
+  ACTIVE
+  RETURNED
+  COMPLETED
+  CANCELLED
+  EXTENDED
+}
+
+enum PurchaseStatus {
+  PENDING
+  CONFIRMED
+  DELIVERED
+  COMPLETED
+  CANCELLED
+  REFUNDED
+}
+
+enum VisitStatus {
+  SCHEDULED
+  IN_PROGRESS
+  COMPLETED
+  MISSED
+  CANCELLED
+}
+
+enum PlantCondition {
+  EXCELLENT
+  GOOD
+  FAIR
+  POOR
+  CRITICAL
+}
+
+enum SwapStatus {
+  PENDING
+  APPROVED
+  SCHEDULED
+  COMPLETED
+  REJECTED
+}
+
+enum PaymentType {
+  RENTAL_PAYMENT
+  PURCHASE_PAYMENT
+  SECURITY_DEPOSIT
+  MAINTENANCE_FEE
+  REFUND
+}
+
+enum PaymentStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
+  REFUNDED
+}
+
+enum PaymentMethod {
+  CARD
+  BANK_TRANSFER
+  CASH_ON_DELIVERY
+  WALLET
+}
+
+enum DeliveryType {
+  DELIVERY
+  PICKUP
+}
+
+enum DeliveryStatus {
+  SCHEDULED
+  IN_TRANSIT
+  DELIVERED
+  FAILED
+  CANCELLED
+}
+
+enum CommissionType {
+  RENTAL
+  PURCHASE
+  MAINTENANCE
+}
+
+enum CommissionStatus {
+  PENDING
+  PAID
+  CANCELLED
+}
+
+enum ReviewType {
+  NURSERY
+  PLANT
+  SERVICE
+}
+
+enum NotificationType {
+  RENTAL_CONFIRMED
+  DELIVERY_SCHEDULED
+  MAINTENANCE_REMINDER
+  PAYMENT_RECEIVED
+  SWAP_APPROVED
+  GENERAL
+}
+
+enum UserOAuthType {
+  GOOGLE
+  APPLE
+}
+
+model UserOAuth {
+  id         Int           @id @default(autoincrement())
+  userId     Int           @unique
+  providerId String
+  type       UserOAuthType
+  createdAt  DateTime      @default(now()) @db.Timestamptz()
+  updatedAt  DateTime      @default(now()) @updatedAt @db.Timestamptz()
+  deletedAt  DateTime?     @db.Timestamptz()
+  User       User[]
+}

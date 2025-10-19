@@ -1,0 +1,5 @@
+{
+    "watch": ["src", "src/i18n/**/*.json"],
+    "ext": "ts, js, json",
+    "exec": "pnpm postbuild && nest start --watch"
+  }
