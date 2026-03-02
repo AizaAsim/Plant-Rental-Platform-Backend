@@ -54,7 +54,8 @@ export class RentalsController {
     @Request() req,
     @Body() createRentalDto: CreateRentalDto
   ): Promise<RentalResponseDto> {
-    return this.rentalsService.create(req.user.id, createRentalDto);
+    // This will throw an error directing users to use Orders API
+    return this.rentalsService.create(req.user.id, createRentalDto) as any;
   }
 
   @Get()

@@ -1,11 +1,10 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { TokenReason } from '@prisma/client';
-import { IsEnum, IsInt, IsUUID } from 'class-validator';
+import { IsString, IsInt, IsUUID } from 'class-validator';
 
 export default class CreatePasswordTokenRequestDTO {
-    @ApiProperty({ enum: TokenReason })
-    @IsEnum(TokenReason)
-    reason: TokenReason;
+    @ApiProperty({ example: 'PASSWORD_RESET' })
+    @IsString()
+    reason: string;
 
     @ApiProperty()
     @IsUUID('4')

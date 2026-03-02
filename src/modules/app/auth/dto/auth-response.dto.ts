@@ -8,17 +8,23 @@ export class UserResponseDto {
   @ApiProperty({ example: "john.doe@example.com" })
   email: string;
 
-  @ApiProperty({ example: "John" })
-  firstName: string;
-
-  @ApiProperty({ example: "Doe" })
-  lastName: string;
+  @ApiProperty({ example: "John Doe" })
+  fullName: string;
 
   @ApiProperty({ example: "+923001234567", required: false })
   phone?: string;
 
   @ApiProperty({ enum: UserRole })
   role: UserRole;
+
+  @ApiProperty({ example: false })
+  isCorporate: boolean;
+
+  @ApiProperty({ example: "Acme Corp", required: false })
+  companyName?: string;
+
+  @ApiProperty({ example: "GST123456789", required: false })
+  gstNumber?: string;
 
   @ApiProperty({ example: true })
   isVerified: boolean;
@@ -38,13 +44,13 @@ export class AuthResponseDto {
     example: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
     description: "JWT access token",
   })
-  accessToken: string;
+  access_token: string;
 
   @ApiProperty({
     example: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
     description: "JWT refresh token",
   })
-  refreshToken: string;
+  refresh_token: string;
 
   @ApiProperty({
     type: UserResponseDto,

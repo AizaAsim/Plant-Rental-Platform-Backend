@@ -15,6 +15,12 @@ import { UsersModule } from "./modules/app/users/users.module";
 import { PlantsModule } from "./modules/app/plants/plants.module";
 import { NurseriesModule } from "./modules/app/nurseries/nurseries.module";
 import { RentalsModule } from "./modules/app/rentals/rentals.module";
+import { PackagesModule } from "./modules/app/packages/packages.module";
+import { CartModule } from "./modules/app/cart/cart.module";
+import { OrdersModule } from "./modules/app/orders/orders.module";
+import { GardenersModule } from "./modules/app/gardeners/gardeners.module";
+import { BookingsModule } from "./modules/app/bookings/bookings.module";
+import { TasksModule } from "./modules/app/tasks/tasks.module";
 @Module({
   imports: [
     EventEmitterModule.forRoot(),
@@ -25,6 +31,12 @@ import { RentalsModule } from "./modules/app/rentals/rentals.module";
     NurseriesModule,
     RentalsModule,
     UsersModule,
+    PackagesModule,
+    CartModule,
+    OrdersModule,
+    GardenersModule,
+    BookingsModule,
+    TasksModule,
     CronModule,
     QueueModule,
     EmailModule,

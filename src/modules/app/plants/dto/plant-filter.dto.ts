@@ -11,10 +11,8 @@ import {
 } from "class-validator";
 import { Type, Transform } from "class-transformer";
 import {
-  PlantCategory,
-  PlantSize,
-  CareLevel,
-  LightRequirement,
+  MaintenanceLevel,
+  SunlightRequirement,
 } from "@prisma/client";
 
 export class PlantFilterDto {
@@ -43,36 +41,27 @@ export class PlantFilterDto {
   limit?: number = 20;
 
   @ApiPropertyOptional({
-    enum: PlantCategory,
-    description: "Filter by category",
+    description: "Filter by category name or ID",
   })
   @IsOptional()
-  @IsEnum(PlantCategory)
-  category?: PlantCategory;
+  @IsString()
+  category?: string;
 
   @ApiPropertyOptional({
-    enum: PlantSize,
-    description: "Filter by size",
+    enum: MaintenanceLevel,
+    description: "Filter by maintenance level",
   })
   @IsOptional()
-  @IsEnum(PlantSize)
-  size?: PlantSize;
+  @IsEnum(MaintenanceLevel)
+  maintenanceLevel?: MaintenanceLevel;
 
   @ApiPropertyOptional({
-    enum: CareLevel,
-    description: "Filter by care level",
+    enum: SunlightRequirement,
+    description: "Filter by sunlight requirement",
   })
   @IsOptional()
-  @IsEnum(CareLevel)
-  careLevel?: CareLevel;
-
-  @ApiPropertyOptional({
-    enum: LightRequirement,
-    description: "Filter by light requirement",
-  })
-  @IsOptional()
-  @IsEnum(LightRequirement)
-  lightRequirement?: LightRequirement;
+  @IsEnum(SunlightRequirement)
+  sunlightRequirement?: SunlightRequirement;
 
   @ApiPropertyOptional({
     description: "Filter by pet-safe plants only",

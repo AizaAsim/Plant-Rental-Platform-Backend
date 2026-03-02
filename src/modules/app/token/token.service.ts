@@ -1,5 +1,4 @@
 import { Injectable } from '@nestjs/common';
-import { TokenReason } from '@prisma/client';
 import DatabaseService from '../../../database/database.service';
 import CreatePasswordTokenRequestDTO from './dto/request/create.request';
 
@@ -8,23 +7,14 @@ export default class TokenService {
     constructor(private _dbService: DatabaseService) {}
 
     async CreatePasswordToken(data: CreatePasswordTokenRequestDTO) {
-        const token = await this._dbService.token.create({
-            data: {
-                uuid: data.uuid,
-                code: data.uuid,
-                reason: data.reason,
-            },
-        });
-
-        return token.code;
+        // Token model doesn't exist in schema - using OTP model instead
+        // This service may need to be refactored to use OTP verification
+        throw new Error('Token service needs to be refactored to use OTP verification');
     }
 
-    async GetToken(code: string, reason?: TokenReason) {
-        const token = await this._dbService.token.findFirst({
-            where: { code, ...(!!reason && { reason }) },
-        });
-        if (!token) return null;
-
-        return token;
+    async GetToken(code: string, reason?: string) {
+        // Token model doesn't exist in schema - using OTP model instead
+        // This service may need to be refactored to use OTP verification
+        throw new Error('Token service needs to be refactored to use OTP verification');
     }
 }

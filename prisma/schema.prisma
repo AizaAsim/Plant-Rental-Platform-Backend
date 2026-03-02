@@ -1,5 +1,4 @@
-// This is your Prisma schema file,
-// learn more about it in the docs: https://pris.ly/d/prisma-schema
+// schema.prisma - Plant Rental Platform
 
 generator client {
   provider = "prisma-client-js"
@@ -7,790 +6,1218 @@ generator client {
 
 datasource db {
   provider = "postgresql"
-  url      = env("APP_DATABASE_URL")
+  url      = env("DATABASE_URL")
 }
 
-// User Management
+// ==================== ENUMS ====================
+
+enum UserRole {
+  USER
+  VENDOR
+  GARDENER
+  ADMIN
+}
+
+enum OtpPurpose {
+  SIGNUP
+  LOGIN
+  PASSWORD_RESET
+  PHONE_VERIFY
+}
+
+enum MaintenanceLevel {
+  LOW
+  MEDIUM
+  HIGH
+}
+
+enum SunlightRequirement {
+  LOW
+  MEDIUM
+  HIGH
+  INDIRECT
+}
+
+enum WaterFrequency {
+  DAILY
+  ALTERNATE_DAYS
+  WEEKLY
+  BIWEEKLY
+  MONTHLY
+}
+
+enum OrderType {
+  RENT
+  BUY
+  MIXED
+}
+
+enum OrderStatus {
+  PENDING
+  CONFIRMED
+  PROCESSING
+  OUT_FOR_DELIVERY
+  DELIVERED
+  COMPLETED
+  CANCELLED
+  RETURNED
+}
+
+enum PaymentStatus {
+  PENDING
+  PAID
+  PARTIALLY_REFUNDED
+  REFUNDED
+  FAILED
+}
+
+enum PaymentType {
+  ORDER
+  RENTAL_EXTENSION
+  SERVICE_BOOKING
+  DEPOSIT
+  REFUND
+}
+
+enum TransactionStatus {
+  PENDING
+  SUCCESS
+  FAILED
+  REFUNDED
+}
+
+enum RentalStatus {
+  ACTIVE
+  EXTENDED
+  RETURNED
+  OVERDUE
+}
+
+enum ServiceType {
+  ONE_TIME
+  RECURRING
+}
+
+enum RecurrencePattern {
+  WEEKLY
+  BIWEEKLY
+  MONTHLY
+}
+
+enum BookingStatus {
+  PENDING
+  CONFIRMED
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED
+}
+
+enum TaskType {
+  SCHEDULED_MAINTENANCE
+  ON_DEMAND
+  FREELANCE_SERVICE
+}
+
+enum TaskStatus {
+  PENDING
+  ASSIGNED
+  ACCEPTED
+  REJECTED
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED
+}
+
+enum TaskPriority {
+  LOW
+  MEDIUM
+  HIGH
+}
+
+enum TaskImageType {
+  BEFORE
+  AFTER
+  ISSUE
+}
+
+enum DiagnosisSeverity {
+  HEALTHY
+  MILD
+  MODERATE
+  SEVERE
+}
+
+enum ChatRole {
+  USER
+  ASSISTANT
+}
+
+enum ReviewableType {
+  PLANT
+  NURSERY
+  GARDENER
+}
+
+enum FeatureType {
+  TRENDING
+  SEASONAL
+  EDITOR_PICK
+  NEW_ARRIVAL
+}
+
+enum InteractionType {
+  VIEW
+  WISHLIST
+  CART_ADD
+  RENT
+  BUY
+}
+
+enum EarningStatus {
+  PENDING
+  PROCESSED
+  PAID
+}
+
+enum EarningType {
+  FREELANCE_BOOKING
+  NURSERY_TASK
+}
+
+enum PayoutStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
+}
+
+enum RecipientType {
+  VENDOR
+  GARDENER
+}
+
+enum DisputeType {
+  REFUND
+  QUALITY
+  DELIVERY
+  SERVICE
+  OTHER
+}
+
+enum DisputeStatus {
+  OPEN
+  UNDER_REVIEW
+  RESOLVED
+  CLOSED
+}
+
+enum DiscountType {
+  PERCENTAGE
+  FLAT
+}
+
+enum ApplicableFor {
+  ALL
+  RENT
+  BUY
+  SERVICE
+}
+
+enum AccountType {
+  SAVINGS
+  CURRENT
+}
+
+enum NotificationType {
+  ORDER
+  RENTAL
+  BOOKING
+  TASK
+  PAYMENT
+  PROMOTION
+  SYSTEM
+}
+
+enum DevicePlatform {
+  IOS
+  ANDROID
+  WEB
+}
+
+// ==================== MODELS ====================
+
 model User {
-  id         String   @id @default(cuid())
-  email      String   @unique
-  phone      String?  @unique
-  password   String
-  firstName  String
-  lastName   String
-  role       UserRole @default(USER)
-  isVerified Boolean  @default(false)
-  isActive   Boolean  @default(true)
-  createdAt  DateTime @default(now())
-  updatedAt  DateTime @updatedAt
+  id            String    @id @default(uuid())
+  email         String    @unique
+  passwordHash  String    @map("password_hash")
+  phone         String?
+  fullName      String    @map("full_name")
+  avatarUrl     String?   @map("avatar_url")
+  role          UserRole
+  isCorporate   Boolean   @default(false) @map("is_corporate")
+  companyName   String?   @map("company_name")
+  gstNumber     String?   @map("gst_number")
+  isVerified    Boolean   @default(false) @map("is_verified")
+  isActive      Boolean   @default(true) @map("is_active")
+  createdAt     DateTime  @default(now()) @map("created_at")
+  updatedAt     DateTime  @updatedAt @map("updated_at")
+  lastLoginAt   DateTime? @map("last_login_at")
 
-  // Profile information
-  avatar      String?
-  dateOfBirth DateTime?
-
-  // Relationships
-  addresses       Address[]
-  rentals         Rental[]
-  purchases       Purchase[]
-  swapRequests    SwapRequest[]
-  reviews         Review[]
-  cart            CartItem[]
-  notifications   Notification[]
-  UserSettings    UserSettings?    @relation(fields: [userSettingsId], references: [id])
-  Device          Device[]
-  Token           Token[]
-  UserOAuth       UserOAuth?       @relation(fields: [userOAuthId], references: [id])
-  userOAuthId     Int?
-  userSettingsId  Int?
-  UserPreferences UserPreferences?
+  // Relations
+  addresses          UserAddress[]
+  nursery            Nursery?
+  gardener           Gardener?
+  carts              Cart[]
+  orders             Order[]
+  serviceBookings    ServiceBooking[]
+  payments           Payment[]
+  plantDiagnoses     PlantDiagnosis[]
+  chatSessions       ChatSession[]
+  reviews            Review[]
+  wishlists          Wishlist[]
+  notifications      Notification[]
+  interactions       UserPlantInteraction[]
+  refreshTokens      RefreshToken[]
+  bankDetails        BankDetail[]
+  disputesRaised     Dispute[]          @relation("DisputeRaisedBy")
+  disputesResolved   Dispute[]          @relation("DisputeResolvedBy")
+  disputeMessages    DisputeMessage[]
+  taskImages         TaskImage[]
+  settingsUpdated    PlatformSetting[]
+  deviceTokens       DeviceToken[]
+  customPackages     CustomPlantPackage[]
 
   @@map("users")
 }
 
-model Address {
-  id        String      @id @default(cuid())
-  userId    String
-  type      AddressType @default(HOME)
-  street    String
-  city      String
-  state     String
-  zipCode   String
-  country   String      @default("Pakistan")
-  isDefault Boolean     @default(false)
+model UserAddress {
+  id           String   @id @default(uuid())
+  userId       String   @map("user_id")
+  label        String?
+  addressLine1 String   @map("address_line1")
+  addressLine2 String?  @map("address_line2")
+  city         String
+  state        String
+  pincode      String
+  latitude     Decimal? @db.Decimal(10, 8)
+  longitude    Decimal? @db.Decimal(11, 8)
+  isDefault    Boolean  @default(false) @map("is_default")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
 
-  // Relationships
-  user       User       @relation(fields: [userId], references: [id], onDelete: Cascade)
-  deliveries Delivery[]
+  user              User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  orders            Order[]
+  serviceBookings   ServiceBooking[]
+  maintenanceTasks  MaintenanceTask[]
 
-  @@map("addresses")
+  @@map("user_addresses")
 }
 
-// Nursery Management
+model OtpVerification {
+  id         String     @id @default(uuid())
+  identifier String
+  otpCode    String     @map("otp_code")
+  purpose    OtpPurpose
+  isUsed     Boolean    @default(false) @map("is_used")
+  expiresAt  DateTime   @map("expires_at")
+  createdAt  DateTime   @default(now()) @map("created_at")
+
+  @@map("otp_verifications")
+}
+
+model RefreshToken {
+  id         String   @id @default(uuid())
+  userId     String   @map("user_id")
+  token      String   @db.VarChar(500)
+  deviceInfo String?  @map("device_info")
+  expiresAt  DateTime @map("expires_at")
+  isRevoked  Boolean  @default(false) @map("is_revoked")
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("refresh_tokens")
+}
+
 model Nursery {
-  id          String  @id @default(cuid())
-  name        String
-  email       String  @unique
-  phone       String
-  password    String
-  description String?
-  logo        String?
-  isActive    Boolean @default(true)
-  isVerified  Boolean @default(false)
+  id              String   @id @default(uuid())
+  vendorId        String   @unique @map("vendor_id")
+  name            String
+  slug            String   @unique
+  description     String?  @db.Text
+  logoUrl         String?  @map("logo_url")
+  coverImageUrl   String?  @map("cover_image_url")
+  addressLine1    String   @map("address_line1")
+  addressLine2    String?  @map("address_line2")
+  city            String
+  state           String
+  pincode         String
+  latitude        Decimal? @db.Decimal(10, 8)
+  longitude       Decimal? @db.Decimal(11, 8)
+  serviceRadiusKm Int      @default(10) @map("service_radius_km")
+  phone           String
+  email           String?
+  isVerified      Boolean  @default(false) @map("is_verified")
+  isActive        Boolean  @default(true) @map("is_active")
+  ratingAvg       Decimal  @default(0) @map("rating_avg") @db.Decimal(2, 1)
+  totalReviews    Int      @default(0) @map("total_reviews")
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
 
-  // Business information
-  businessLicense String?
-  taxId           String?
-  rating          Float   @default(0)
-  totalReviews    Int     @default(0)
-
-  // Location
-  address   String
-  city      String
-  state     String
-  zipCode   String
-  latitude  Float?
-  longitude Float?
-
-  // Service areas (JSON array of zipcodes/areas they serve)
-  serviceAreas Json?
-
-  // Settings
-  deliveryFee      Float @default(0)
-  minimumOrder     Float @default(0)
-  maxDeliveryRange Int   @default(10) // in kilometers
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  // Relationships
-  plants            Plant[]
-  staff             Staff[]
-  rentals           Rental[]
-  purchases         Purchase[]
-  maintenanceVisits MaintenanceVisit[]
-  commissions       Commission[]
-  reviews           Review[]
+  vendor         User                  @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+  workingHours   NurseryWorkingHours[]
+  images         NurseryImage[]
+  serviceAreas   NurseryServiceArea[]
+  plants         Plant[]
+  gardeners      Gardener[]
+  orders         Order[]
+  maintenanceTasks MaintenanceTask[]
+  vendorEarnings VendorEarning[]
 
   @@map("nurseries")
 }
 
-model Staff {
-  id        String    @id @default(cuid())
-  nurseryId String
-  name      String
-  phone     String
-  email     String?
-  role      StaffRole @default(CARE_TAKER)
-  isActive  Boolean   @default(true)
+model NurseryWorkingHours {
+  id         String   @id @default(uuid())
+  nurseryId  String   @map("nursery_id")
+  dayOfWeek  Int      @map("day_of_week")
+  openTime   String?  @map("open_time")
+  closeTime  String?  @map("close_time")
+  isClosed   Boolean  @default(false) @map("is_closed")
+  createdAt  DateTime @default(now()) @map("created_at")
 
-  // Care staff specific
-  expertise       Json? // Array of plant types they specialize in
-  maxVisitsPerDay Int   @default(8)
+  nursery Nursery @relation(fields: [nurseryId], references: [id], onDelete: Cascade)
 
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  // Relationships
-  nursery           Nursery            @relation(fields: [nurseryId], references: [id], onDelete: Cascade)
-  maintenanceVisits MaintenanceVisit[]
-
-  @@map("staff")
+  @@map("nursery_working_hours")
 }
 
-// Plant Management
-model Plant {
-  id          String        @id @default(cuid())
-  nurseryId   String
+model NurseryImage {
+  id           String   @id @default(uuid())
+  nurseryId    String   @map("nursery_id")
+  imageUrl     String   @map("image_url")
+  displayOrder Int      @default(0) @map("display_order")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  nursery Nursery @relation(fields: [nurseryId], references: [id], onDelete: Cascade)
+
+  @@map("nursery_images")
+}
+
+model NurseryServiceArea {
+  id        String   @id @default(uuid())
+  nurseryId String   @map("nursery_id")
+  pincode   String
+  city      String?
+  createdAt DateTime @default(now()) @map("created_at")
+
+  nursery Nursery @relation(fields: [nurseryId], references: [id], onDelete: Cascade)
+
+  @@unique([nurseryId, pincode])
+  @@map("nursery_service_areas")
+}
+
+model PlantCategory {
+  id          String   @id @default(uuid())
   name        String
-  description String?
-  category    PlantCategory
+  slug        String   @unique
+  description String?  @db.Text
+  imageUrl    String?  @map("image_url")
+  parentId    String?  @map("parent_id")
+  isActive    Boolean  @default(true) @map("is_active")
+  createdAt   DateTime @default(now()) @map("created_at")
 
-  // Plant details
-  scientificName    String?
-  size              PlantSize
-  careLevel         CareLevel
-  lightRequirement  LightRequirement
-  wateringFrequency Int // days between watering
-  isPetSafe         Boolean          @default(false)
-  isIndoor          Boolean          @default(true)
+  parent   PlantCategory?  @relation("CategoryHierarchy", fields: [parentId], references: [id])
+  children PlantCategory[] @relation("CategoryHierarchy")
+  plants   Plant[]
 
-  // Pricing
-  purchasePrice   Float
-  rentalPrice     Float // per week
-  securityDeposit Float
+  @@map("plant_categories")
+}
 
-  // Inventory
-  totalStock     Int @default(1)
-  availableStock Int @default(1)
+model Plant {
+  id                  String              @id @default(uuid())
+  nurseryId           String              @map("nursery_id")
+  categoryId          String              @map("category_id")
+  name                String
+  scientificName      String?             @map("scientific_name")
+  slug                String
+  description         String?             @db.Text
+  careInstructions    String?             @map("care_instructions") @db.Text
+  sunlightRequirement SunlightRequirement? @map("sunlight_requirement")
+  waterFrequency      WaterFrequency?     @map("water_frequency")
+  maintenanceLevel    MaintenanceLevel    @map("maintenance_level")
+  isIndoor            Boolean             @default(true) @map("is_indoor")
+  isPetFriendly       Boolean             @default(false) @map("is_pet_friendly")
+  heightCm            Int?                @map("height_cm")
+  potIncluded         Boolean             @default(true) @map("pot_included")
+  rentPriceDaily      Decimal?            @map("rent_price_daily") @db.Decimal(10, 2)
+  rentPriceWeekly     Decimal?            @map("rent_price_weekly") @db.Decimal(10, 2)
+  rentPriceMonthly    Decimal?            @map("rent_price_monthly") @db.Decimal(10, 2)
+  buyPrice            Decimal?            @map("buy_price") @db.Decimal(10, 2)
+  depositAmount       Decimal             @default(0) @map("deposit_amount") @db.Decimal(10, 2)
+  isAvailableForRent  Boolean             @default(true) @map("is_available_for_rent")
+  isAvailableForSale  Boolean             @default(true) @map("is_available_for_sale")
+  stockQuantity       Int                 @default(0) @map("stock_quantity")
+  minRentDays         Int                 @default(7) @map("min_rent_days")
+  maxRentDays         Int                 @default(365) @map("max_rent_days")
+  isFeatured          Boolean             @default(false) @map("is_featured")
+  isActive            Boolean             @default(true) @map("is_active")
+  ratingAvg           Decimal             @default(0) @map("rating_avg") @db.Decimal(2, 1)
+  totalReviews        Int                 @default(0) @map("total_reviews")
+  totalRentals        Int                 @default(0) @map("total_rentals")
+  createdAt           DateTime            @default(now()) @map("created_at")
+  updatedAt           DateTime            @updatedAt @map("updated_at")
 
-  // Media
-  images           Json // Array of image URLs
-  careInstructions String?
+  nursery        Nursery                @relation(fields: [nurseryId], references: [id], onDelete: Cascade)
+  category       PlantCategory          @relation(fields: [categoryId], references: [id])
+  images         PlantImage[]
+  tags           PlantTagMapping[]
+  cartItems      CartItem[]
+  orderItems     OrderItem[]
+  diagnoses      PlantDiagnosis[]
+  wishlists      Wishlist[]
+  featuredPlants FeaturedPlant[]
+  interactions   UserPlantInteraction[]
+  packageItems   PlantPackageItem[]
+  customPackageItems CustomPlantPackageItem[]
 
-  // Status
-  isActive   Boolean @default(true)
-  isFeatured Boolean @default(false)
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  // Relationships
-  nursery      Nursery        @relation(fields: [nurseryId], references: [id], onDelete: Cascade)
-  rentals      Rental[]
-  purchases    Purchase[]
-  cartItems    CartItem[]
-  swapRequests SwapRequest[]
-  reviews      Review[]
-  PurchaseItem PurchaseItem[]
-
+  @@unique([nurseryId, slug])
   @@map("plants")
 }
 
-// Shopping Cart
-model CartItem {
-  id       String    @id @default(cuid())
-  userId   String
-  plantId  String
-  quantity Int       @default(1)
-  type     OrderType // RENTAL or PURCHASE
+model PlantImage {
+  id           String   @id @default(uuid())
+  plantId      String   @map("plant_id")
+  imageUrl     String   @map("image_url")
+  isPrimary    Boolean  @default(false) @map("is_primary")
+  displayOrder Int      @default(0) @map("display_order")
+  createdAt    DateTime @default(now()) @map("created_at")
 
-  // Rental specific
-  rentalDuration Int? // in weeks
-  serviceType    ServiceType?
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  // Relationships
-  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
   plant Plant @relation(fields: [plantId], references: [id], onDelete: Cascade)
 
-  @@unique([userId, plantId, type])
+  @@map("plant_images")
+}
+
+model PlantTag {
+  id        String            @id @default(uuid())
+  name      String            @unique
+  createdAt DateTime          @default(now()) @map("created_at")
+  plants    PlantTagMapping[]
+
+  @@map("plant_tags")
+}
+
+model PlantTagMapping {
+  plantId String @map("plant_id")
+  tagId   String @map("tag_id")
+
+  plant Plant    @relation(fields: [plantId], references: [id], onDelete: Cascade)
+  tag   PlantTag @relation(fields: [tagId], references: [id], onDelete: Cascade)
+
+  @@id([plantId, tagId])
+  @@map("plant_tag_mapping")
+}
+
+model Gardener {
+  id                  String    @id @default(uuid())
+  userId              String    @unique @map("user_id")
+  nurseryId           String?   @map("nursery_id")
+  bio                 String?   @db.Text
+  experienceYears     Int       @default(0) @map("experience_years")
+  hourlyRate          Decimal?  @map("hourly_rate") @db.Decimal(10, 2)
+  isFreelancer        Boolean   @default(false) @map("is_freelancer")
+  isAvailable         Boolean   @default(true) @map("is_available")
+  ratingAvg           Decimal   @default(0) @map("rating_avg") @db.Decimal(2, 1)
+  totalReviews        Int       @default(0) @map("total_reviews")
+  totalTasksCompleted Int       @default(0) @map("total_tasks_completed")
+  isVerified          Boolean   @default(false) @map("is_verified")
+  createdAt           DateTime  @default(now()) @map("created_at")
+  updatedAt           DateTime  @updatedAt @map("updated_at")
+
+  user              User                    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  nursery           Nursery?                @relation(fields: [nurseryId], references: [id])
+  skills            GardenerSkillMapping[]
+  serviceAreas      GardenerServiceArea[]
+  availability      GardenerAvailability[]
+  serviceBookings   ServiceBooking[]
+  maintenanceTasks  MaintenanceTask[]
+  gardenerEarnings  GardenerEarning[]
+
+  @@map("gardeners")
+}
+
+model GardenerSkill {
+  id        String                 @id @default(uuid())
+  name      String                 @unique
+  createdAt DateTime               @default(now()) @map("created_at")
+  gardeners GardenerSkillMapping[]
+
+  @@map("gardener_skills")
+}
+
+model GardenerSkillMapping {
+  gardenerId String @map("gardener_id")
+  skillId    String @map("skill_id")
+
+  gardener Gardener      @relation(fields: [gardenerId], references: [id], onDelete: Cascade)
+  skill    GardenerSkill @relation(fields: [skillId], references: [id], onDelete: Cascade)
+
+  @@id([gardenerId, skillId])
+  @@map("gardener_skill_mapping")
+}
+
+model GardenerServiceArea {
+  id         String   @id @default(uuid())
+  gardenerId String   @map("gardener_id")
+  pincode    String
+  city       String?
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  gardener Gardener @relation(fields: [gardenerId], references: [id], onDelete: Cascade)
+
+  @@unique([gardenerId, pincode])
+  @@map("gardener_service_areas")
+}
+
+model GardenerAvailability {
+  id          String   @id @default(uuid())
+  gardenerId  String   @map("gardener_id")
+  dayOfWeek   Int      @map("day_of_week")
+  startTime   String?  @map("start_time")
+  endTime     String?  @map("end_time")
+  isAvailable Boolean  @default(true) @map("is_available")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  gardener Gardener @relation(fields: [gardenerId], references: [id], onDelete: Cascade)
+
+  @@map("gardener_availability")
+}
+
+model Cart {
+  id        String     @id @default(uuid())
+  userId    String     @map("user_id")
+  createdAt DateTime   @default(now()) @map("created_at")
+  updatedAt DateTime   @updatedAt @map("updated_at")
+
+  user  User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  items CartItem[]
+  packageItems CartPackageItem[]
+
+  @@map("carts")
+}
+
+model CartItem {
+  id            String    @id @default(uuid())
+  cartId        String    @map("cart_id")
+  plantId       String    @map("plant_id")
+  quantity      Int       @default(1)
+  orderType     OrderType @map("order_type")
+  rentStartDate DateTime? @map("rent_start_date") @db.Date
+  rentEndDate   DateTime? @map("rent_end_date") @db.Date
+  createdAt     DateTime  @default(now()) @map("created_at")
+  updatedAt     DateTime  @updatedAt @map("updated_at")
+
+  cart  Cart  @relation(fields: [cartId], references: [id], onDelete: Cascade)
+  plant Plant @relation(fields: [plantId], references: [id])
+
+  @@unique([cartId, plantId, orderType])
   @@map("cart_items")
 }
 
-// Orders & Rentals
-model Rental {
-  id        String @id @default(cuid())
-  userId    String
-  nurseryId String
-  plantId   String
+model Order {
+  id                String        @id @default(uuid())
+  orderNumber       String        @unique @map("order_number")
+  userId            String        @map("user_id")
+  nurseryId         String        @map("nursery_id")
+  deliveryAddressId String        @map("delivery_address_id")
+  orderType         OrderType     @map("order_type")
+  status            OrderStatus   @default(PENDING)
+  subtotal          Decimal       @map("subtotal") @db.Decimal(10, 2)
+  deliveryFee       Decimal       @default(0) @map("delivery_fee") @db.Decimal(10, 2)
+  taxAmount         Decimal       @default(0) @map("tax_amount") @db.Decimal(10, 2)
+  discountAmount    Decimal       @default(0) @map("discount_amount") @db.Decimal(10, 2)
+  depositAmount     Decimal       @default(0) @map("deposit_amount") @db.Decimal(10, 2)
+  totalAmount       Decimal       @map("total_amount") @db.Decimal(10, 2)
+  paymentStatus     PaymentStatus @default(PENDING) @map("payment_status")
+  paymentMethod     String?       @map("payment_method")
+  notes             String?       @db.Text
+  cancelledBy       String?       @map("cancelled_by")
+  cancellationReason String?      @map("cancellation_reason") @db.Text
+  cancelledAt       DateTime?     @map("cancelled_at")
+  deliveredAt       DateTime?     @map("delivered_at")
+  createdAt         DateTime      @default(now()) @map("created_at")
+  updatedAt         DateTime      @updatedAt @map("updated_at")
 
-  // Rental details
-  duration    Int // in weeks
-  serviceType ServiceType
-  status      RentalStatus @default(PENDING)
+  user            User          @relation(fields: [userId], references: [id])
+  nursery         Nursery       @relation(fields: [nurseryId], references: [id])
+  deliveryAddress UserAddress   @relation(fields: [deliveryAddressId], references: [id])
+  items           OrderItem[]
+  payments        Payment[]
+  vendorEarnings  VendorEarning[]
+  reviews         Review[]
+  disputes        Dispute[]
+  couponUsage     CouponUsage[]
 
-  // Pricing
-  rentalPrice      Float
-  maintenancePrice Float @default(0)
-  securityDeposit  Float
-  totalAmount      Float
-
-  // Dates
-  startDate   DateTime
-  endDate     DateTime
-  deliveredAt DateTime?
-  returnedAt  DateTime?
-
-  // Addresses
-  deliveryAddress Json
-  pickupAddress   Json?
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  // Relationships
-  user                User                 @relation(fields: [userId], references: [id])
-  nursery             Nursery              @relation(fields: [nurseryId], references: [id])
-  plant               Plant                @relation(fields: [plantId], references: [id])
-  payments            Payment[]
-  delivery            Delivery?
-  maintenanceSchedule MaintenanceSchedule?
-  swapRequests        SwapRequest[]
-
-  @@map("rentals")
+  @@map("orders")
 }
 
-model Purchase {
-  id        String         @id @default(cuid())
-  userId    String
-  nurseryId String
-  status    PurchaseStatus @default(PENDING)
+model OrderItem {
+  id               String        @id @default(uuid())
+  orderId          String        @map("order_id")
+  plantId          String        @map("plant_id")
+  quantity         Int
+  orderType        OrderType     @map("order_type")
+  unitPrice        Decimal       @map("unit_price") @db.Decimal(10, 2)
+  depositPerUnit   Decimal       @default(0) @map("deposit_per_unit") @db.Decimal(10, 2)
+  totalPrice       Decimal       @map("total_price") @db.Decimal(10, 2)
+  rentStartDate    DateTime?     @map("rent_start_date") @db.Date
+  rentEndDate      DateTime?     @map("rent_end_date") @db.Date
+  rentalStatus     RentalStatus? @map("rental_status")
+  actualReturnDate DateTime?     @map("actual_return_date") @db.Date
+  extensionCount   Int           @default(0) @map("extension_count")
+  createdAt        DateTime      @default(now()) @map("created_at")
 
-  // Pricing
-  subtotal    Float
-  deliveryFee Float @default(0)
-  tax         Float @default(0)
-  totalAmount Float
+  order            Order             @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  plant            Plant             @relation(fields: [plantId], references: [id])
+  rentalExtensions RentalExtension[]
+  maintenanceTasks MaintenanceTask[]
 
-  // Delivery
-  deliveryAddress Json
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  // Relationships
-  user     User           @relation(fields: [userId], references: [id])
-  nursery  Nursery        @relation(fields: [nurseryId], references: [id])
-  items    PurchaseItem[]
-  payments Payment[]
-  delivery Delivery?
-  Plant    Plant?         @relation(fields: [plantId], references: [id])
-  plantId  String?
-
-  @@map("purchases")
+  @@map("order_items")
 }
 
-model PurchaseItem {
-  id         String @id @default(cuid())
-  purchaseId String
-  plantId    String
-  quantity   Int
-  unitPrice  Float
-  totalPrice Float
+model RentalExtension {
+  id              String        @id @default(uuid())
+  orderItemId     String        @map("order_item_id")
+  originalEndDate DateTime      @map("original_end_date") @db.Date
+  newEndDate      DateTime      @map("new_end_date") @db.Date
+  extensionPrice  Decimal       @map("extension_price") @db.Decimal(10, 2)
+  paymentStatus   PaymentStatus @default(PENDING) @map("payment_status")
+  createdAt       DateTime      @default(now()) @map("created_at")
+  updatedAt       DateTime      @updatedAt @map("updated_at")
 
-  // Relationships
-  purchase Purchase @relation(fields: [purchaseId], references: [id], onDelete: Cascade)
-  plant    Plant    @relation(fields: [plantId], references: [id])
+  orderItem OrderItem @relation(fields: [orderItemId], references: [id], onDelete: Cascade)
 
-  @@map("purchase_items")
+  @@map("rental_extensions")
 }
 
-// Maintenance System
-model MaintenanceSchedule {
-  id        String  @id @default(cuid())
-  rentalId  String  @unique
-  frequency Int // visits per week (2 or 3)
-  isActive  Boolean @default(true)
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  // Relationships
-  rental Rental             @relation(fields: [rentalId], references: [id], onDelete: Cascade)
-  visits MaintenanceVisit[]
-
-  @@map("maintenance_schedules")
-}
-
-model MaintenanceVisit {
-  id         String  @id @default(cuid())
-  scheduleId String
-  nurseryId  String
-  staffId    String?
-
-  // Visit details
-  scheduledDate DateTime
-  completedAt   DateTime?
-  status        VisitStatus @default(SCHEDULED)
-
-  // Visit data
-  plantCondition PlantCondition?
-  watered        Boolean         @default(false)
-  pruned         Boolean         @default(false)
-  fertilized     Boolean         @default(false)
-  issues         String? // Any problems noticed
-  photos         Json? // Array of photo URLs
-  notes          String?
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  // Relationships
-  schedule MaintenanceSchedule @relation(fields: [scheduleId], references: [id], onDelete: Cascade)
-  nursery  Nursery             @relation(fields: [nurseryId], references: [id])
-  staff    Staff?              @relation(fields: [staffId], references: [id])
-
-  @@map("maintenance_visits")
-}
-
-// Swap System
-model SwapRequest {
-  id       String     @id @default(cuid())
-  userId   String
-  rentalId String
-  plantId  String // current plant
-  reason   String
-  status   SwapStatus @default(PENDING)
-
-  // Replacement options provided by nursery
-  replacementOptions Json? // Array of plant IDs offered as replacements
-  selectedPlantId    String? // Plant ID user selected
-
-  // Swap details
-  scheduledDate DateTime?
-  completedAt   DateTime?
-  notes         String?
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  // Relationships
-  user   User   @relation(fields: [userId], references: [id])
-  rental Rental @relation(fields: [rentalId], references: [id])
-  plant  Plant  @relation(fields: [plantId], references: [id])
-
-  @@map("swap_requests")
-}
-
-// Payment System
 model Payment {
-  id     String        @id @default(cuid())
-  userId String
-  type   PaymentType
-  status PaymentStatus @default(PENDING)
+  id                   String            @id @default(uuid())
+  orderId              String?           @map("order_id")
+  bookingId            String?           @map("booking_id")
+  userId               String            @map("user_id")
+  amount               Decimal           @db.Decimal(10, 2)
+  paymentType          PaymentType       @map("payment_type")
+  paymentMethod        String            @map("payment_method")
+  paymentGateway       String?           @map("payment_gateway")
+  gatewayTransactionId String?           @map("gateway_transaction_id")
+  gatewayOrderId       String?           @map("gateway_order_id")
+  status               TransactionStatus @default(PENDING)
+  failureReason        String?           @map("failure_reason") @db.Text
+  refundAmount         Decimal?          @map("refund_amount") @db.Decimal(10, 2)
+  refundedAt           DateTime?         @map("refunded_at")
+  metadata             Json?
+  createdAt            DateTime          @default(now()) @map("created_at")
+  updatedAt            DateTime          @updatedAt @map("updated_at")
 
-  // Payment details
-  amount   Float
-  currency String        @default("PKR")
-  method   PaymentMethod
-
-  // External references
-  stripePaymentIntentId String?
-  transactionId         String?
-
-  // Order references
-  rentalId   String?
-  purchaseId String?
-
-  // Metadata
-  metadata      Json?
-  failureReason String?
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  // Relationships
-  rental   Rental?   @relation(fields: [rentalId], references: [id])
-  purchase Purchase? @relation(fields: [purchaseId], references: [id])
+  user    User            @relation(fields: [userId], references: [id])
+  order   Order?          @relation(fields: [orderId], references: [id])
+  booking ServiceBooking? @relation(fields: [bookingId], references: [id])
 
   @@map("payments")
 }
 
-model UserPreferences {
-  id     String @id @default(cuid())
-  userId String @unique
+model ServiceBooking {
+  id                String             @id @default(uuid())
+  bookingNumber     String             @unique @map("booking_number")
+  userId            String             @map("user_id")
+  gardenerId        String             @map("gardener_id")
+  serviceAddressId  String             @map("service_address_id")
+  serviceType       ServiceType        @map("service_type")
+  serviceDate       DateTime           @map("service_date") @db.Date
+  serviceTime       String             @map("service_time")
+  durationHours     Decimal            @map("duration_hours") @db.Decimal(4, 2)
+  recurrencePattern RecurrencePattern? @map("recurrence_pattern")
+  recurrenceEndDate DateTime?          @map("recurrence_end_date") @db.Date
+  status            BookingStatus      @default(PENDING)
+  hourlyRate        Decimal            @map("hourly_rate") @db.Decimal(10, 2)
+  totalAmount       Decimal            @map("total_amount") @db.Decimal(10, 2)
+  paymentStatus     PaymentStatus      @default(PENDING) @map("payment_status")
+  notes             String?            @db.Text
+  cancelledBy       String?            @map("cancelled_by")
+  cancellationReason String?           @map("cancellation_reason") @db.Text
+  cancelledAt       DateTime?          @map("cancelled_at")
+  completedAt       DateTime?          @map("completed_at")
+  createdAt         DateTime           @default(now()) @map("created_at")
+  updatedAt         DateTime           @updatedAt @map("updated_at")
 
-  // Notification preferences
-  emailNotifications Boolean @default(true)
-  smsNotifications   Boolean @default(false)
-  pushNotifications  Boolean @default(true)
-  marketingEmails    Boolean @default(false)
-  rentalReminders    Boolean @default(true)
-  maintenanceUpdates Boolean @default(true)
+  user             User              @relation(fields: [userId], references: [id])
+  gardener         Gardener          @relation(fields: [gardenerId], references: [id])
+  serviceAddress   UserAddress       @relation(fields: [serviceAddressId], references: [id])
+  payments         Payment[]
+  maintenanceTasks MaintenanceTask[]
+  gardenerEarnings GardenerEarning[]
+  reviews          Review[]
+  disputes         Dispute[]
+  couponUsage      CouponUsage[]
 
-  // App preferences
-  language              String @default("en")
-  theme                 String @default("light")
-  currency              String @default("PKR")
-  defaultDeliveryRadius Int    @default(10)
-
-  // Plant preferences
-  preferredCategories Json @default("[]")
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  // Relationships
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
-
-  @@map("user_preferences")
+  @@map("service_bookings")
 }
 
-// Delivery System
-model Delivery {
-  id     String         @id @default(cuid())
-  type   DeliveryType
-  status DeliveryStatus @default(SCHEDULED)
+model MaintenanceTask {
+  id              String       @id @default(uuid())
+  taskNumber      String       @unique @map("task_number")
+  orderItemId     String?      @map("order_item_id")
+  bookingId       String?      @map("booking_id")
+  nurseryId       String?      @map("nursery_id")
+  gardenerId      String       @map("gardener_id")
+  userId          String       @map("user_id")
+  taskType        TaskType     @map("task_type")
+  scheduledDate   DateTime     @map("scheduled_date") @db.Date
+  scheduledTime   String?      @map("scheduled_time")
+  addressId       String       @map("address_id")
+  status          TaskStatus   @default(PENDING)
+  priority        TaskPriority @default(MEDIUM)
+  description     String?      @db.Text
+  gardenerNotes   String?      @map("gardener_notes") @db.Text
+  completionNotes String?      @map("completion_notes") @db.Text
+  startedAt       DateTime?    @map("started_at")
+  completedAt     DateTime?    @map("completed_at")
+  createdAt       DateTime     @default(now()) @map("created_at")
+  updatedAt       DateTime     @updatedAt @map("updated_at")
 
-  // Delivery details
-  scheduledDate DateTime
-  deliveredAt   DateTime?
-  address       Json
-  instructions  String?
+  orderItem       OrderItem?        @relation(fields: [orderItemId], references: [id])
+  booking         ServiceBooking?   @relation(fields: [bookingId], references: [id])
+  nursery         Nursery?          @relation(fields: [nurseryId], references: [id])
+  gardener        Gardener          @relation(fields: [gardenerId], references: [id])
+  address         UserAddress       @relation(fields: [addressId], references: [id])
+  images          TaskImage[]
+  gardenerEarnings GardenerEarning[]
 
-  // References
-  rentalId   String? @unique
-  purchaseId String? @unique
-
-  // Delivery person details
-  driverName  String?
-  driverPhone String?
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  // Relationships
-  rental          Rental?   @relation(fields: [rentalId], references: [id])
-  purchase        Purchase? @relation(fields: [purchaseId], references: [id])
-  deliveryAddress Address   @relation(fields: [addressId], references: [id])
-  addressId       String
-
-  @@map("deliveries")
+  @@map("maintenance_tasks")
 }
 
-// Commission & Analytics
-model Commission {
-  id        String         @id @default(cuid())
-  nurseryId String
-  type      CommissionType
+model TaskImage {
+  id         String        @id @default(uuid())
+  taskId     String        @map("task_id")
+  imageUrl   String        @map("image_url")
+  imageType  TaskImageType @map("image_type")
+  caption    String?
+  uploadedBy String        @map("uploaded_by")
+  createdAt  DateTime      @default(now()) @map("created_at")
 
-  // Financial details
-  orderAmount      Float
-  commissionRate   Float // percentage
-  commissionAmount Float
-  status           CommissionStatus @default(PENDING)
+  task     MaintenanceTask @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  uploader User            @relation(fields: [uploadedBy], references: [id])
 
-  // References
-  rentalId   String?
-  purchaseId String?
-
-  // Payout details
-  paidAt    DateTime?
-  reference String? // Payout reference
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  // Relationships
-  nursery Nursery @relation(fields: [nurseryId], references: [id])
-
-  @@map("commissions")
+  @@map("task_images")
 }
 
-// Reviews & Ratings
+model PlantDiagnosis {
+  id               String            @id @default(uuid())
+  userId           String            @map("user_id")
+  plantId          String?           @map("plant_id")
+  imageUrl         String            @map("image_url")
+  diagnosisResult  Json              @map("diagnosis_result")
+  diseaseDetected  String?           @map("disease_detected")
+  confidenceScore  Decimal?          @map("confidence_score") @db.Decimal(5, 4)
+  careSuggestions  String?           @map("care_suggestions") @db.Text
+  severity         DiagnosisSeverity?
+  createdAt        DateTime          @default(now()) @map("created_at")
+  updatedAt        DateTime          @updatedAt @map("updated_at")
+
+  user  User   @relation(fields: [userId], references: [id])
+  plant Plant? @relation(fields: [plantId], references: [id])
+
+  @@map("plant_diagnoses")
+}
+
+model ChatSession {
+  id              String   @id @default(uuid())
+  userId          String   @map("user_id")
+  title           String?
+  contextPlantIds String[] @map("context_plant_ids")
+  isActive        Boolean  @default(true) @map("is_active")
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  user     User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  messages ChatMessage[]
+
+  @@map("chat_sessions")
+}
+
+model ChatMessage {
+  id        String   @id @default(uuid())
+  sessionId String   @map("session_id")
+  role      ChatRole
+  content   String   @db.Text
+  metadata  Json?
+  createdAt DateTime @default(now()) @map("created_at")
+
+  session ChatSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@map("chat_messages")
+}
+
 model Review {
-  id        String     @id @default(cuid())
-  userId    String
-  nurseryId String?
-  plantId   String?
-  type      ReviewType
+  id                 String         @id @default(uuid())
+  userId             String         @map("user_id")
+  reviewableType     ReviewableType @map("reviewable_type")
+  reviewableId       String         @map("reviewable_id")
+  orderId            String?        @map("order_id")
+  bookingId          String?        @map("booking_id")
+  rating             Int
+  title              String?
+  comment            String?        @db.Text
+  isVerifiedPurchase Boolean        @default(false) @map("is_verified_purchase")
+  isActive           Boolean        @default(true) @map("is_active")
+  createdAt          DateTime       @default(now()) @map("created_at")
+  updatedAt          DateTime       @updatedAt @map("updated_at")
 
-  rating  Int // 1-5 stars
-  title   String?
-  comment String?
+  user    User            @relation(fields: [userId], references: [id])
+  order   Order?          @relation(fields: [orderId], references: [id])
+  booking ServiceBooking? @relation(fields: [bookingId], references: [id])
+  images  ReviewImage[]
 
-  // References
-  rentalId   String?
-  purchaseId String?
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  // Relationships
-  user    User     @relation(fields: [userId], references: [id])
-  nursery Nursery? @relation(fields: [nurseryId], references: [id])
-  plant   Plant?   @relation(fields: [plantId], references: [id])
-
+  @@unique([userId, reviewableType, reviewableId, orderId])
   @@map("reviews")
 }
 
-// Notifications
+model ReviewImage {
+  id        String   @id @default(uuid())
+  reviewId  String   @map("review_id")
+  imageUrl  String   @map("image_url")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  review Review @relation(fields: [reviewId], references: [id], onDelete: Cascade)
+
+  @@map("review_images")
+}
+
+model Wishlist {
+  id        String   @id @default(uuid())
+  userId    String   @map("user_id")
+  plantId   String   @map("plant_id")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  plant Plant @relation(fields: [plantId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, plantId])
+  @@map("wishlists")
+}
+
 model Notification {
-  id      String           @id @default(cuid())
-  userId  String
-  type    NotificationType
-  title   String
-  message String
-  data    Json? // Additional data for the notification
+  id            String           @id @default(uuid())
+  userId        String           @map("user_id")
+  title         String
+  message       String           @db.Text
+  type          NotificationType
+  referenceType String?          @map("reference_type")
+  referenceId   String?          @map("reference_id")
+  isRead        Boolean          @default(false) @map("is_read")
+  readAt        DateTime?        @map("read_at")
+  createdAt     DateTime         @default(now()) @map("created_at")
 
-  isRead Boolean @default(false)
-
-  createdAt DateTime @default(now())
-
-  // Relationships
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@map("notifications")
 }
 
-model UserSettings {
-  id                   Int       @id @default(autoincrement())
-  notificationsEnabled Boolean   @default(true)
-  userId               Int       @unique
-  createdAt            DateTime  @default(now()) @db.Timestamptz()
-  updatedAt            DateTime  @default(now()) @updatedAt @db.Timestamptz()
-  deletedAt            DateTime? @db.Timestamptz()
-  User                 User[]
+model DeviceToken {
+  id        String         @id @default(uuid())
+  userId    String         @map("user_id")
+  token     String
+  platform  DevicePlatform
+  createdAt DateTime       @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, token])
+  @@map("device_tokens")
 }
 
-enum DeviceType {
-  WEB
-  ANDROID
-  IOS
+model FeaturedPlant {
+  id           String      @id @default(uuid())
+  plantId      String      @map("plant_id")
+  featureType  FeatureType @map("feature_type")
+  displayOrder Int         @default(0) @map("display_order")
+  startDate    DateTime?   @map("start_date") @db.Date
+  endDate      DateTime?   @map("end_date") @db.Date
+  isActive     Boolean     @default(true) @map("is_active")
+  createdAt    DateTime    @default(now()) @map("created_at")
+  updatedAt    DateTime    @updatedAt @map("updated_at")
+
+  plant Plant @relation(fields: [plantId], references: [id], onDelete: Cascade)
+
+  @@map("featured_plants")
 }
 
-model Device {
-  id           Int        @id @default(autoincrement())
-  uuid         String     @default(uuid())
-  userAgent    String?
-  type         DeviceType @default(ANDROID)
-  userIdDevice Int
-  createdAt    DateTime   @default(now()) @db.Timestamptz()
-  updatedAt    DateTime   @default(now()) @updatedAt @db.Timestamptz()
-  deletedAt    DateTime?  @db.Timestamptz()
-  userId       String? // Changed from Int? to String? to match User model
-  User         User?      @relation(fields: [userId], references: [id])
+model UserPlantInteraction {
+  id              String          @id @default(uuid())
+  userId          String          @map("user_id")
+  plantId         String          @map("plant_id")
+  interactionType InteractionType @map("interaction_type")
+  createdAt       DateTime        @default(now()) @map("created_at")
+
+  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  plant Plant @relation(fields: [plantId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+  @@map("user_plant_interactions")
 }
 
-enum TokenReason {
-  FORGOT_PASSWORD
-  RESET_PASSWORD
-  VERIFICATION
-  CHANGE_PASSWORD
+model VendorEarning {
+  id               String        @id @default(uuid())
+  nurseryId        String        @map("nursery_id")
+  orderId          String        @map("order_id")
+  orderAmount      Decimal       @map("order_amount") @db.Decimal(10, 2)
+  commissionRate   Decimal       @map("commission_rate") @db.Decimal(5, 4)
+  commissionAmount Decimal       @map("commission_amount") @db.Decimal(10, 2)
+  netEarnings      Decimal       @map("net_earnings") @db.Decimal(10, 2)
+  status           EarningStatus @default(PENDING)
+  payoutId         String?       @map("payout_id")
+  createdAt        DateTime      @default(now()) @map("created_at")
+  updatedAt        DateTime      @updatedAt @map("updated_at")
+
+  nursery Nursery @relation(fields: [nurseryId], references: [id])
+  order   Order   @relation(fields: [orderId], references: [id])
+  payout  Payout? @relation(fields: [payoutId], references: [id])
+
+  @@map("vendor_earnings")
 }
 
-model Token {
-  id          Int         @id @default(autoincrement())
-  uuid        String      @default(uuid())
-  code        String
-  reason      TokenReason
-  userIdToken Int?
-  createdAt   DateTime    @default(now()) @db.Timestamptz()
-  updatedAt   DateTime    @default(now()) @updatedAt @db.Timestamptz()
-  deletedAt   DateTime?   @db.Timestamptz()
-  userId      String? // Changed from Int? to String? to match User model
-  User        User?       @relation(fields: [userId], references: [id])
+model GardenerEarning {
+  id               String        @id @default(uuid())
+  gardenerId       String        @map("gardener_id")
+  bookingId        String?       @map("booking_id")
+  taskId           String?       @map("task_id")
+  earningType      EarningType   @map("earning_type")
+  grossAmount      Decimal       @map("gross_amount") @db.Decimal(10, 2)
+  commissionRate   Decimal       @default(0) @map("commission_rate") @db.Decimal(5, 4)
+  commissionAmount Decimal       @default(0) @map("commission_amount") @db.Decimal(10, 2)
+  netEarnings      Decimal       @map("net_earnings") @db.Decimal(10, 2)
+  status           EarningStatus @default(PENDING)
+  payoutId         String?       @map("payout_id")
+  createdAt        DateTime      @default(now()) @map("created_at")
+  updatedAt        DateTime      @updatedAt @map("updated_at")
+
+  gardener Gardener         @relation(fields: [gardenerId], references: [id])
+  booking  ServiceBooking?  @relation(fields: [bookingId], references: [id])
+  task     MaintenanceTask? @relation(fields: [taskId], references: [id])
+  payout   Payout?          @relation(fields: [payoutId], references: [id])
+
+  @@map("gardener_earnings")
 }
 
-enum MediaType {
-  IMAGE
-  VIDEO
-  DOCUMENT
-  ARCHIVE
-  OTHER
+model Payout {
+  id              String        @id @default(uuid())
+  payoutNumber    String        @unique @map("payout_number")
+  recipientType   RecipientType @map("recipient_type")
+  recipientId     String        @map("recipient_id")
+  amount          Decimal       @db.Decimal(10, 2)
+  status          PayoutStatus  @default(PENDING)
+  paymentMethod   String?       @map("payment_method")
+  bankReference   String?       @map("bank_reference")
+  processedAt     DateTime?     @map("processed_at")
+  notes           String?       @db.Text
+  createdAt       DateTime      @default(now()) @map("created_at")
+  updatedAt       DateTime      @updatedAt @map("updated_at")
+
+  vendorEarnings   VendorEarning[]
+  gardenerEarnings GardenerEarning[]
+
+  @@map("payouts")
 }
 
-enum MediaStatus {
-  UPLOADING
-  READY
-  STALE
+model PlatformSetting {
+  id          String   @id @default(uuid())
+  key         String   @unique
+  value       String   @db.Text
+  description String?  @db.Text
+  updatedBy   String?  @map("updated_by")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  updater User? @relation(fields: [updatedBy], references: [id])
+
+  @@map("platform_settings")
 }
 
-enum MediaAccess {
-  PUBLIC
-  PRIVATE
+model Dispute {
+  id                 String        @id @default(uuid())
+  disputeNumber      String        @unique @map("dispute_number")
+  raisedBy           String        @map("raised_by")
+  orderId            String?       @map("order_id")
+  bookingId          String?       @map("booking_id")
+  disputeType        DisputeType   @map("dispute_type")
+  subject            String
+  description        String        @db.Text
+  status             DisputeStatus @default(OPEN)
+  resolution         String?       @db.Text
+  resolvedBy         String?       @map("resolved_by")
+  resolvedAt         DateTime?     @map("resolved_at")
+  createdAt          DateTime      @default(now()) @map("created_at")
+  updatedAt          DateTime      @updatedAt @map("updated_at")
+
+  raiser   User             @relation("DisputeRaisedBy", fields: [raisedBy], references: [id])
+  resolver User?            @relation("DisputeResolvedBy", fields: [resolvedBy], references: [id])
+  order    Order?           @relation(fields: [orderId], references: [id])
+  booking  ServiceBooking?  @relation(fields: [bookingId], references: [id])
+  messages DisputeMessage[]
+
+  @@map("disputes")
 }
 
-// ENUMS
-enum UserRole {
-  USER
-  ADMIN
+model DisputeMessage {
+  id          String   @id @default(uuid())
+  disputeId   String   @map("dispute_id")
+  senderId    String   @map("sender_id")
+  message     String   @db.Text
+  attachments String[]
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  dispute Dispute @relation(fields: [disputeId], references: [id], onDelete: Cascade)
+  sender  User    @relation(fields: [senderId], references: [id])
+
+  @@map("dispute_messages")
 }
 
-enum AddressType {
-  HOME
-  OFFICE
-  OTHER
+model Coupon {
+  id                String        @id @default(uuid())
+  code              String        @unique
+  description       String?       @db.Text
+  discountType      DiscountType  @map("discount_type")
+  discountValue     Decimal       @map("discount_value") @db.Decimal(10, 2)
+  minOrderAmount    Decimal       @default(0) @map("min_order_amount") @db.Decimal(10, 2)
+  maxDiscountAmount Decimal?      @map("max_discount_amount") @db.Decimal(10, 2)
+  applicableFor     ApplicableFor @default(ALL) @map("applicable_for")
+  usageLimit        Int?          @map("usage_limit")
+  usedCount         Int           @default(0) @map("used_count")
+  perUserLimit      Int           @default(1) @map("per_user_limit")
+  validFrom         DateTime      @map("valid_from")
+  validUntil        DateTime      @map("valid_until")
+  isActive          Boolean       @default(true) @map("is_active")
+  createdAt         DateTime      @default(now()) @map("created_at")
+  updatedAt         DateTime      @updatedAt @map("updated_at")
+
+  usage CouponUsage[]
+
+  @@map("coupons")
 }
 
-enum StaffRole {
-  CARE_TAKER
-  DELIVERY
-  MANAGER
+model CouponUsage {
+  id              String   @id @default(uuid())
+  couponId        String   @map("coupon_id")
+  userId          String   @map("user_id")
+  orderId         String?  @map("order_id")
+  bookingId       String?  @map("booking_id")
+  discountApplied Decimal  @map("discount_applied") @db.Decimal(10, 2)
+  createdAt       DateTime @default(now()) @map("created_at")
+
+  coupon  Coupon          @relation(fields: [couponId], references: [id])
+  order   Order?          @relation(fields: [orderId], references: [id])
+  booking ServiceBooking? @relation(fields: [bookingId], references: [id])
+
+  @@map("coupon_usage")
 }
 
-enum PlantCategory {
-  INDOOR
-  OUTDOOR
-  SUCCULENTS
-  FLOWERING
-  FOLIAGE
-  HERBS
-  TREES
-  SHRUBS
+model BankDetail {
+  id                String      @id @default(uuid())
+  userId            String      @map("user_id")
+  accountHolderName String      @map("account_holder_name")
+  accountNumber     String      @map("account_number")
+  bankName          String      @map("bank_name")
+  ifscCode          String      @map("ifsc_code")
+  accountType       AccountType @map("account_type")
+  isVerified        Boolean     @default(false) @map("is_verified")
+  isPrimary         Boolean     @default(false) @map("is_primary")
+  createdAt         DateTime    @default(now()) @map("created_at")
+  updatedAt         DateTime    @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("bank_details")
 }
 
-enum PlantSize {
-  SMALL
-  MEDIUM
-  LARGE
-  EXTRA_LARGE
+model PlantPackage {
+  id                String   @id @default(uuid())
+  name              String
+  slug              String   @unique
+  description       String?  @db.Text
+  imageUrl          String?  @map("image_url")
+  price             Decimal  @db.Decimal(10, 2)
+  originalPrice     Decimal? @map("original_price") @db.Decimal(10, 2)
+  isCustomizable    Boolean  @default(false) @map("is_customizable")
+  isActive          Boolean  @default(true) @map("is_active")
+  isDefault         Boolean  @default(false) @map("is_default")
+  createdBy         String?  @map("created_by")
+  createdAt         DateTime @default(now()) @map("created_at")
+  updatedAt         DateTime @updatedAt @map("updated_at")
+
+  items             PlantPackageItem[]
+  customPackages    CustomPlantPackage[]
+  cartItems         CartPackageItem[]
+
+  @@map("plant_packages")
 }
 
-enum CareLevel {
-  EASY
-  MODERATE
-  DIFFICULT
+model PlantPackageItem {
+  id                String   @id @default(uuid())
+  packageId         String   @map("package_id")
+  plantId           String   @map("plant_id")
+  quantity          Int      @default(1)
+  isRequired         Boolean  @default(false) @map("is_required")
+  createdAt         DateTime @default(now()) @map("created_at")
+
+  package           PlantPackage @relation(fields: [packageId], references: [id], onDelete: Cascade)
+  plant             Plant        @relation(fields: [plantId], references: [id])
+
+  @@unique([packageId, plantId])
+  @@map("plant_package_items")
 }
 
-enum LightRequirement {
-  LOW
-  MEDIUM
-  HIGH
-  BRIGHT_INDIRECT
+model CustomPlantPackage {
+  id                String   @id @default(uuid())
+  userId            String   @map("user_id")
+  basePackageId     String?  @map("base_package_id")
+  name              String
+  price             Decimal  @db.Decimal(10, 2)
+  createdAt         DateTime @default(now()) @map("created_at")
+  updatedAt         DateTime @updatedAt @map("updated_at")
+
+  user              User                    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  basePackage       PlantPackage?           @relation(fields: [basePackageId], references: [id])
+  items             CustomPlantPackageItem[]
+  cartItems         CartPackageItem[]
+
+  @@map("custom_plant_packages")
 }
 
-enum OrderType {
-  RENTAL
-  PURCHASE
+model CustomPlantPackageItem {
+  id                String   @id @default(uuid())
+  customPackageId   String   @map("custom_package_id")
+  plantId           String   @map("plant_id")
+  quantity          Int      @default(1)
+  createdAt         DateTime @default(now()) @map("created_at")
+
+  customPackage     CustomPlantPackage @relation(fields: [customPackageId], references: [id], onDelete: Cascade)
+  plant             Plant              @relation(fields: [plantId], references: [id])
+
+  @@unique([customPackageId, plantId])
+  @@map("custom_plant_package_items")
 }
 
-enum ServiceType {
-  BASIC
-  PREMIUM
-}
+model CartPackageItem {
+  id                String   @id @default(uuid())
+  cartId            String   @map("cart_id")
+  packageId         String?  @map("package_id")
+  customPackageId   String?  @map("custom_package_id")
+  quantity          Int      @default(1)
+  createdAt         DateTime @default(now()) @map("created_at")
+  updatedAt         DateTime @updatedAt @map("updated_at")
 
-enum RentalStatus {
-  PENDING
-  CONFIRMED
-  DELIVERED
-  ACTIVE
-  RETURNED
-  COMPLETED
-  CANCELLED
-  EXTENDED
-}
+  cart              Cart             @relation(fields: [cartId], references: [id], onDelete: Cascade)
+  package           PlantPackage?    @relation(fields: [packageId], references: [id])
+  customPackage     CustomPlantPackage? @relation(fields: [customPackageId], references: [id])
 
-enum PurchaseStatus {
-  PENDING
-  CONFIRMED
-  DELIVERED
-  COMPLETED
-  CANCELLED
-  REFUNDED
-}
-
-enum VisitStatus {
-  SCHEDULED
-  IN_PROGRESS
-  COMPLETED
-  MISSED
-  CANCELLED
-}
-
-enum PlantCondition {
-  EXCELLENT
-  GOOD
-  FAIR
-  POOR
-  CRITICAL
-}
-
-enum SwapStatus {
-  PENDING
-  APPROVED
-  SCHEDULED
-  COMPLETED
-  REJECTED
-}
-
-enum PaymentType {
-  RENTAL_PAYMENT
-  PURCHASE_PAYMENT
-  SECURITY_DEPOSIT
-  MAINTENANCE_FEE
-  REFUND
-}
-
-enum PaymentStatus {
-  PENDING
-  PROCESSING
-  COMPLETED
-  FAILED
-  REFUNDED
-}
-
-enum PaymentMethod {
-  CARD
-  BANK_TRANSFER
-  CASH_ON_DELIVERY
-  WALLET
-}
-
-enum DeliveryType {
-  DELIVERY
-  PICKUP
-}
-
-enum DeliveryStatus {
-  SCHEDULED
-  IN_TRANSIT
-  DELIVERED
-  FAILED
-  CANCELLED
-}
-
-enum CommissionType {
-  RENTAL
-  PURCHASE
-  MAINTENANCE
-}
-
-enum CommissionStatus {
-  PENDING
-  PAID
-  CANCELLED
-}
-
-enum ReviewType {
-  NURSERY
-  PLANT
-  SERVICE
-}
-
-enum NotificationType {
-  RENTAL_CONFIRMED
-  DELIVERY_SCHEDULED
-  MAINTENANCE_REMINDER
-  PAYMENT_RECEIVED
-  SWAP_APPROVED
-  GENERAL
-}
-
-enum UserOAuthType {
-  GOOGLE
-  APPLE
-}
-
-model UserOAuth {
-  id         Int           @id @default(autoincrement())
-  userId     Int           @unique
-  providerId String
-  type       UserOAuthType
-  createdAt  DateTime      @default(now()) @db.Timestamptz()
-  updatedAt  DateTime      @default(now()) @updatedAt @db.Timestamptz()
-  deletedAt  DateTime?     @db.Timestamptz()
-  User       User[]
+  @@map("cart_package_items")
 }

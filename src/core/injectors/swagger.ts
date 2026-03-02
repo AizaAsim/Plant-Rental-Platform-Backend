@@ -5,12 +5,15 @@ export default function InjectSwagger(app: INestApplication) {
     const v1Options = new DocumentBuilder()
         .setTitle('API')
         .setVersion('1.0')
-        .addSecurity('authorization', {
-            type: 'apiKey',
-            description: 'API Authorization',
-            name: 'authorization',
-            in: 'header',
-        })
+        .addBearerAuth(
+            {
+                type: 'http',
+                scheme: 'bearer',
+                bearerFormat: 'JWT',
+                description: 'Enter your JWT token',
+            },
+            'bearer',  // This name must match @ApiBearerAuth('bearer')
+        )
         .build();
 
     const v1Document = SwaggerModule.createDocument(app, v1Options);

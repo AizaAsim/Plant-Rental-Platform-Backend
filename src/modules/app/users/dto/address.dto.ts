@@ -1,38 +1,48 @@
 import { ApiProperty, ApiPropertyOptional } from "@nestjs/swagger";
 import {
   IsString,
-  IsEnum,
   IsBoolean,
   IsOptional,
   MinLength,
   MaxLength,
   Matches,
+  IsNumber,
+  IsNotEmpty,
 } from "class-validator";
-import { AddressType } from "@prisma/client";
 
 export class CreateAddressDto {
-  @ApiProperty({
-    enum: AddressType,
-    example: "HOME",
-    description: "Type of address",
+  @ApiPropertyOptional({
+    example: "Home",
+    description: "Address label",
   })
-  @IsEnum(AddressType)
-  type: AddressType;
+  @IsOptional()
+  @IsString()
+  label?: string;
 
   @ApiProperty({
     example: "123 Main Street",
-    description: "Street address",
+    description: "Address line 1",
   })
   @IsString()
+  @IsNotEmpty()
   @MinLength(5)
   @MaxLength(200)
-  street: string;
+  address_line1: string;
+
+  @ApiPropertyOptional({
+    example: "Apartment 4B",
+    description: "Address line 2",
+  })
+  @IsOptional()
+  @IsString()
+  address_line2?: string;
 
   @ApiProperty({
     example: "Karachi",
     description: "City",
   })
   @IsString()
+  @IsNotEmpty()
   @MinLength(2)
   @MaxLength(100)
   city: string;
@@ -42,28 +52,37 @@ export class CreateAddressDto {
     description: "State or province",
   })
   @IsString()
+  @IsNotEmpty()
   @MinLength(2)
   @MaxLength(100)
   state: string;
 
   @ApiProperty({
     example: "75500",
-    description: "Postal/ZIP code",
+    description: "Pincode",
   })
   @IsString()
+  @IsNotEmpty()
   @Matches(/^[0-9]{5,10}$/, {
-    message: "Zip code must be 5-10 digits",
+    message: "Pincode must be 5-10 digits",
   })
-  zipCode: string;
+  pincode: string;
 
   @ApiPropertyOptional({
-    example: "Pakistan",
-    default: "Pakistan",
-    description: "Country",
+    example: 24.8607,
+    description: "Latitude",
   })
   @IsOptional()
-  @IsString()
-  country?: string;
+  @IsNumber()
+  latitude?: number;
+
+  @ApiPropertyOptional({
+    example: 67.0011,
+    description: "Longitude",
+  })
+  @IsOptional()
+  @IsNumber()
+  longitude?: number;
 
   @ApiPropertyOptional({
     example: false,
@@ -71,28 +90,35 @@ export class CreateAddressDto {
   })
   @IsOptional()
   @IsBoolean()
-  isDefault?: boolean;
+  is_default?: boolean;
 }
 
 export class UpdateAddressDto {
   @ApiPropertyOptional({
-    enum: AddressType,
-    example: "HOME",
-    description: "Type of address",
+    example: "Home",
+    description: "Address label",
   })
   @IsOptional()
-  @IsEnum(AddressType)
-  type?: AddressType;
+  @IsString()
+  label?: string;
 
   @ApiPropertyOptional({
     example: "123 Main Street",
-    description: "Street address",
+    description: "Address line 1",
   })
   @IsOptional()
   @IsString()
   @MinLength(5)
   @MaxLength(200)
-  street?: string;
+  address_line1?: string;
+
+  @ApiPropertyOptional({
+    example: "Apartment 4B",
+    description: "Address line 2",
+  })
+  @IsOptional()
+  @IsString()
+  address_line2?: string;
 
   @ApiPropertyOptional({
     example: "Karachi",
@@ -116,22 +142,30 @@ export class UpdateAddressDto {
 
   @ApiPropertyOptional({
     example: "75500",
-    description: "Postal/ZIP code",
+    description: "Pincode",
   })
   @IsOptional()
   @IsString()
   @Matches(/^[0-9]{5,10}$/, {
-    message: "Zip code must be 5-10 digits",
+    message: "Pincode must be 5-10 digits",
   })
-  zipCode?: string;
+  pincode?: string;
 
   @ApiPropertyOptional({
-    example: "Pakistan",
-    description: "Country",
+    example: 24.8607,
+    description: "Latitude",
   })
   @IsOptional()
-  @IsString()
-  country?: string;
+  @IsNumber()
+  latitude?: number;
+
+  @ApiPropertyOptional({
+    example: 67.0011,
+    description: "Longitude",
+  })
+  @IsOptional()
+  @IsNumber()
+  longitude?: number;
 
   @ApiPropertyOptional({
     example: false,
@@ -139,7 +173,7 @@ export class UpdateAddressDto {
   })
   @IsOptional()
   @IsBoolean()
-  isDefault?: boolean;
+  is_default?: boolean;
 }
 
 export class AddressResponseDto {
@@ -149,11 +183,14 @@ export class AddressResponseDto {
   @ApiProperty({ example: "clh1234567890abcdef" })
   userId: string;
 
-  @ApiProperty({ enum: AddressType, example: "HOME" })
-  type: AddressType;
+  @ApiPropertyOptional({ example: "Home" })
+  label?: string;
 
   @ApiProperty({ example: "123 Main Street" })
-  street: string;
+  addressLine1: string;
+
+  @ApiPropertyOptional({ example: "Apartment 4B" })
+  addressLine2?: string;
 
   @ApiProperty({ example: "Karachi" })
   city: string;
@@ -162,11 +199,20 @@ export class AddressResponseDto {
   state: string;
 
   @ApiProperty({ example: "75500" })
-  zipCode: string;
+  pincode: string;
 
-  @ApiProperty({ example: "Pakistan" })
-  country: string;
+  @ApiPropertyOptional({ example: 24.8607 })
+  latitude?: number;
+
+  @ApiPropertyOptional({ example: 67.0011 })
+  longitude?: number;
 
   @ApiProperty({ example: true })
   isDefault: boolean;
+
+  @ApiProperty({ example: "2024-01-01T00:00:00.000Z" })
+  createdAt: Date;
+
+  @ApiProperty({ example: "2024-01-01T00:00:00.000Z" })
+  updatedAt: Date;
 }

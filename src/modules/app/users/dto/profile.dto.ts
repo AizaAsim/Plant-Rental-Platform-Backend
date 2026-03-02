@@ -10,24 +10,14 @@ import {
 
 export class UpdateProfileDto {
   @ApiPropertyOptional({
-    example: "John",
-    description: "User first name",
+    example: "John Doe",
+    description: "User full name",
   })
   @IsOptional()
   @IsString()
   @MinLength(2)
-  @MaxLength(50)
-  firstName?: string;
-
-  @ApiPropertyOptional({
-    example: "Doe",
-    description: "User last name",
-  })
-  @IsOptional()
-  @IsString()
-  @MinLength(2)
-  @MaxLength(50)
-  lastName?: string;
+  @MaxLength(100)
+  full_name?: string;
 
   @ApiPropertyOptional({
     example: "+923001234567",
@@ -43,15 +33,23 @@ export class UpdateProfileDto {
   })
   @IsOptional()
   @IsUrl()
-  avatar?: string;
+  avatar_url?: string;
 
   @ApiPropertyOptional({
-    example: "1990-01-01",
-    description: "User date of birth",
+    example: "Acme Corp",
+    description: "Company name (for corporate users)",
   })
   @IsOptional()
-  @IsDateString()
-  dateOfBirth?: string;
+  @IsString()
+  company_name?: string;
+
+  @ApiPropertyOptional({
+    example: "GST123456789",
+    description: "GST number",
+  })
+  @IsOptional()
+  @IsString()
+  gst_number?: string;
 }
 
 export class ProfileResponseDto {
@@ -61,23 +59,26 @@ export class ProfileResponseDto {
   @ApiProperty({ example: "john.doe@example.com" })
   email: string;
 
-  @ApiProperty({ example: "John" })
-  firstName: string;
-
-  @ApiProperty({ example: "Doe" })
-  lastName: string;
+  @ApiProperty({ example: "John Doe" })
+  fullName: string;
 
   @ApiProperty({ example: "+923001234567", required: false })
   phone?: string;
 
   @ApiProperty({ example: "https://example.com/avatar.jpg", required: false })
-  avatar?: string;
+  avatarUrl?: string;
 
-  @ApiProperty({ example: "1990-01-01", required: false })
-  dateOfBirth?: Date;
-
-  @ApiProperty({ example: "USER", enum: ["USER", "ADMIN"] })
+  @ApiProperty({ example: "USER", enum: ["USER", "VENDOR", "GARDENER", "ADMIN"] })
   role: string;
+
+  @ApiProperty({ example: false })
+  isCorporate: boolean;
+
+  @ApiProperty({ example: "Acme Corp", required: false })
+  companyName?: string;
+
+  @ApiProperty({ example: "GST123456789", required: false })
+  gstNumber?: string;
 
   @ApiProperty({ example: true })
   isVerified: boolean;

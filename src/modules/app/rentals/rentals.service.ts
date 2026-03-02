@@ -52,7 +52,7 @@ export class RentalsService {
       throw new NotFoundException("Plant not found or not available");
     }
 
-    if (plant.availableStock < 1) {
+    if (plant.stockQuantity < 1) {
       throw new BadRequestException("Plant is out of stock");
     }
 
@@ -74,7 +74,7 @@ export class RentalsService {
     // Get delivery address
     let deliveryAddress: any;
     if (deliveryAddressId) {
-      const address = await this.prisma.address.findFirst({
+      const address = await this.prisma.userAddress.findFirst({
         where: {
           id: deliveryAddressId,
           userId,
@@ -86,11 +86,11 @@ export class RentalsService {
       }
 
       deliveryAddress = {
-        street: address.street,
+        addressLine1: address.addressLine1,
+        addressLine2: address.addressLine2,
         city: address.city,
         state: address.state,
-        zipCode: address.zipCode,
-        country: address.country,
+        pincode: address.pincode,
       };
     } else if (customDeliveryAddress) {
       deliveryAddress = customDeliveryAddress;
@@ -98,96 +98,10 @@ export class RentalsService {
       throw new BadRequestException("Delivery address is required");
     }
 
-    // Calculate pricing
-    const weeklyRentalPrice = plant.rentalPrice;
-    const totalRentalPrice = weeklyRentalPrice * duration;
-
-    let maintenancePrice = 0;
-    if (includeMaintenance && serviceType === "PREMIUM") {
-      // Premium service includes maintenance
-      maintenancePrice = 200 * duration * (maintenanceFrequency || 2); // PKR 200 per visit
-    }
-
-    const securityDeposit = plant.securityDeposit;
-    const totalAmount = totalRentalPrice + maintenancePrice + securityDeposit;
-
-    // Create rental in a transaction
-    const rental = await this.prisma.$transaction(async (prisma) => {
-      // Create rental
-      const newRental = await prisma.rental.create({
-        data: {
-          userId,
-          nurseryId,
-          plantId,
-          duration,
-          serviceType,
-          status: "PENDING",
-          rentalPrice: totalRentalPrice,
-          maintenancePrice,
-          securityDeposit,
-          totalAmount,
-          startDate: new Date(startDate),
-          endDate,
-          deliveryAddress,
-          pickupAddress: deliveryAddress, // Same as delivery initially
-        },
-        include: {
-          plant: true,
-          nursery: true,
-          user: true,
-        },
-      });
-
-      // Reduce available stock
-      await prisma.plant.update({
-        where: { id: plantId },
-        data: {
-          availableStock: {
-            decrement: 1,
-          },
-        },
-      });
-
-      // Create maintenance schedule if included
-      if (includeMaintenance) {
-        await prisma.maintenanceSchedule.create({
-          data: {
-            rentalId: newRental.id,
-            frequency: maintenanceFrequency || 2,
-            isActive: true,
-          },
-        });
-
-        // Schedule initial maintenance visits
-        await this.scheduleMaintenanceVisits(
-          newRental.id,
-          nurseryId,
-          new Date(startDate),
-          endDate,
-          maintenanceFrequency || 2
-        );
-      }
-
-      // Create delivery record
-      await prisma.delivery.create({
-        data: {
-          type: "DELIVERY",
-          status: "SCHEDULED",
-          scheduledDate: new Date(startDate),
-          address: deliveryAddress,
-          instructions: deliveryInstructions,
-          rentalId: newRental.id,
-          addressId: deliveryAddressId || "",
-        },
-      });
-
-      return newRental;
-    });
-
-    // Send confirmation email
-    // await this.emailService.sendRentalConfirmation(rental.user.email, rental);
-
-    return rental;
+    // Rentals are now handled through Orders API
+    throw new BadRequestException(
+      "Rentals are now handled through the Orders API. Please use POST /api/v1/orders/checkout with order_type=RENT"
+    );
   }
 
   async findAll(userId: string, filterDto: RentalFilterDto) {
@@ -203,7 +117,9 @@ export class RentalsService {
       sortOrder = "desc",
     } = filterDto;
 
-    const where: Prisma.RentalWhereInput = {
+    // Rentals are now handled through Orders with orderType=RENT
+    // This method should query OrderItems instead
+    const where: any = {
       userId,
       ...(status && { status }),
       ...(nurseryId && { nurseryId }),
@@ -219,7 +135,7 @@ export class RentalsService {
     };
 
     // Build orderBy
-    let orderBy: Prisma.RentalOrderByWithRelationInput = {};
+    let orderBy: any = {};
     switch (sortBy) {
       case "startDate":
         orderBy = { startDate: sortOrder };
@@ -236,9 +152,17 @@ export class RentalsService {
 
     const skip = (page - 1) * limit;
 
+    const whereClause: any = {
+      order: { userId },
+      orderType: "RENT" as any,
+      ...(status && { rentalStatus: status }),
+      ...(nurseryId && { order: { nurseryId } }),
+      ...(plantId && { plantId }),
+    };
+
     const [rentals, total] = await this.prisma.$transaction([
-      this.prisma.rental.findMany({
-        where,
+      this.prisma.orderItem.findMany({
+        where: whereClause,
         orderBy,
         skip,
         take: limit,
@@ -249,50 +173,44 @@ export class RentalsService {
                 select: {
                   id: true,
                   name: true,
-                  logo: true,
+                  logoUrl: true,
                 },
               },
             },
           },
-          nursery: {
-            select: {
-              id: true,
-              name: true,
-              phone: true,
-              address: true,
-              city: true,
-            },
-          },
-          maintenanceSchedule: {
+          order: {
             include: {
-              visits: {
-                where: {
-                  scheduledDate: {
-                    gte: new Date(),
-                  },
+              nursery: {
+                select: {
+                  id: true,
+                  name: true,
+                  phone: true,
+                  addressLine1: true,
+                  city: true,
                 },
-                orderBy: {
-                  scheduledDate: "asc",
-                },
-                take: 3,
               },
-            },
-          },
-          delivery: true,
-          payments: {
-            where: {
-              status: "COMPLETED",
+              payments: {
+                where: {
+                  status: "COMPLETED" as any,
+                },
+              },
             },
           },
         },
       }),
-      this.prisma.rental.count({ where }),
+      this.prisma.orderItem.count({
+        where: {
+          order: { userId },
+          orderType: "RENT",
+          ...(status && { rentalStatus: status }),
+        },
+      }),
     ]);
 
     const totalPages = Math.ceil(total / limit);
 
     return {
-      data: rentals,
+      data: rentals.map((rental) => this.mapOrderItemToRentalDto(rental)),
       total,
       page,
       limit,
@@ -303,46 +221,32 @@ export class RentalsService {
   }
 
   async findById(id: string, userId: string) {
-    const rental = await this.prisma.rental.findFirst({
+    // Rentals are now OrderItems with orderType=RENT
+    const rental = await this.prisma.orderItem.findFirst({
       where: {
         id,
-        userId,
+        order: { userId },
+        orderType: "RENT",
       },
       include: {
         plant: {
           include: {
             nursery: true,
-            reviews: {
-              where: {
-                userId,
-              },
-            },
           },
         },
-        nursery: true,
-        user: {
-          select: {
-            id: true,
-            email: true,
-            firstName: true,
-            lastName: true,
-            phone: true,
-          },
-        },
-        maintenanceSchedule: {
+        order: {
           include: {
-            visits: {
-              orderBy: {
-                scheduledDate: "asc",
+            user: {
+              select: {
+                id: true,
+                email: true,
+                fullName: true,
+                phone: true,
               },
             },
-          },
-        },
-        delivery: true,
-        payments: true,
-        swapRequests: {
-          orderBy: {
-            createdAt: "desc",
+            nursery: true,
+            payments: true,
+            deliveryAddress: true,
           },
         },
       },
@@ -354,30 +258,38 @@ export class RentalsService {
 
     // Calculate days remaining
     const today = new Date();
-    const endDate = new Date(rental.endDate);
-    const daysRemaining = Math.ceil(
-      (endDate.getTime() - today.getTime()) / (1000 * 60 * 60 * 24)
-    );
+    const endDate = rental.rentEndDate ? new Date(rental.rentEndDate) : null;
+    const daysRemaining = endDate
+      ? Math.ceil((endDate.getTime() - today.getTime()) / (1000 * 60 * 60 * 24))
+      : 0;
 
     // Calculate total paid
-    const totalPaid = rental.payments
-      .filter((p) => p.status === "COMPLETED")
-      .reduce((sum, p) => sum + p.amount, 0);
+    const totalPaid = (rental.order.payments || [])
+      .filter((p: any) => p.status === "COMPLETED")
+      .reduce((sum: number, p: any) => sum + Number(p.amount || 0), 0);
 
+    const orderTotal = Number(rental.order.totalAmount || 0);
+
+    const rentalDto = this.mapOrderItemToRentalDto(rental);
     return {
-      ...rental,
+      ...rentalDto,
       daysRemaining: Math.max(0, daysRemaining),
       totalPaid,
-      remainingBalance: rental.totalAmount - totalPaid,
-      canExtend: rental.status === "ACTIVE" && daysRemaining <= 7,
-      canReturn: rental.status === "ACTIVE" || rental.status === "DELIVERED",
-      canConvertToPurchase: rental.status === "ACTIVE" && daysRemaining > 0,
+      remainingBalance: orderTotal - totalPaid,
+      canExtend: rental.rentalStatus === "ACTIVE" && daysRemaining <= 7,
+      canReturn: rental.rentalStatus === "ACTIVE",
+      canConvertToPurchase: rental.rentalStatus === "ACTIVE" && daysRemaining > 0,
     };
   }
 
   async update(id: string, userId: string, updateRentalDto: UpdateRentalDto) {
-    const rental = await this.prisma.rental.findFirst({
-      where: { id, userId },
+    // Rentals are now OrderItems with orderType=RENT
+    const rental = await this.prisma.orderItem.findFirst({
+      where: {
+        id,
+        order: { userId },
+        orderType: "RENT" as any,
+      },
     });
 
     if (!rental) {
@@ -386,15 +298,23 @@ export class RentalsService {
 
     // Validate status transitions
     if (updateRentalDto.status) {
-      this.validateStatusTransition(rental.status, updateRentalDto.status);
+      if (updateRentalDto.status) {
+        this.validateStatusTransition(rental.rentalStatus || "ACTIVE", updateRentalDto.status);
+      }
     }
 
-    const updatedRental = await this.prisma.rental.update({
+    const updatedRental = await this.prisma.orderItem.update({
       where: { id },
-      data: updateRentalDto,
+      data: {
+        ...(updateRentalDto.status && { rentalStatus: updateRentalDto.status as any }),
+      },
       include: {
         plant: true,
-        nursery: true,
+        order: {
+          include: {
+            nursery: true,
+          },
+        },
       },
     });
 
@@ -403,7 +323,7 @@ export class RentalsService {
       await this.handleStatusChange(updatedRental, updateRentalDto.status);
     }
 
-    return updatedRental;
+    return this.mapOrderItemToRentalDto(updatedRental);
   }
 
   async extendRental(
@@ -413,15 +333,21 @@ export class RentalsService {
   ) {
     const { additionalWeeks, reason } = extendRentalDto;
 
-    const rental = await this.prisma.rental.findFirst({
+    // Rentals are now OrderItems with orderType=RENT
+    const rental = await this.prisma.orderItem.findFirst({
       where: {
         id,
-        userId,
-        status: { in: ["ACTIVE", "DELIVERED"] },
+        order: { userId },
+        orderType: "RENT" as any,
+        rentalStatus: { in: ["ACTIVE", "EXTENDED"] as any },
       },
       include: {
         plant: true,
-        maintenanceSchedule: true,
+        order: {
+          include: {
+            payments: true,
+          },
+        },
       },
     });
 
@@ -431,7 +357,10 @@ export class RentalsService {
 
     // Check if extension is allowed (e.g., within 7 days of end date)
     const today = new Date();
-    const endDate = new Date(rental.endDate);
+    const endDate = rental.rentEndDate ? new Date(rental.rentEndDate) : null;
+    if (!endDate) {
+      throw new BadRequestException("Rental end date not found");
+    }
     const daysUntilEnd = Math.ceil(
       (endDate.getTime() - today.getTime()) / (1000 * 60 * 60 * 24)
     );
@@ -460,60 +389,46 @@ export class RentalsService {
     }
 
     // Calculate additional costs
-    const additionalRentalCost = rental.plant.rentalPrice * additionalWeeks;
+    const weeklyRate = Number(rental.plant.rentPriceMonthly || 0) / 4;
+    const additionalRentalCost = weeklyRate * additionalWeeks;
     let additionalMaintenanceCost = 0;
-
-    if (rental.maintenanceSchedule) {
-      additionalMaintenanceCost =
-        200 * additionalWeeks * rental.maintenanceSchedule.frequency;
-    }
+    // Maintenance costs would be calculated separately if maintenance is included
 
     const additionalTotalCost =
       additionalRentalCost + additionalMaintenanceCost;
 
     // Update rental in transaction
     const updatedRental = await this.prisma.$transaction(async (prisma) => {
-      // Update rental
-      const updated = await prisma.rental.update({
+      // Update rental end date
+      const updated = await prisma.orderItem.update({
         where: { id },
         data: {
-          duration: rental.duration + additionalWeeks,
-          endDate: newEndDate,
-          rentalPrice: rental.rentalPrice + additionalRentalCost,
-          maintenancePrice: rental.maintenancePrice + additionalMaintenanceCost,
-          totalAmount: rental.totalAmount + additionalTotalCost,
-          status: "EXTENDED",
+          rentEndDate: newEndDate,
+          rentalStatus: "EXTENDED" as any,
+          extensionCount: { increment: 1 },
         },
         include: {
           plant: true,
-          nursery: true,
-          user: true,
+          order: {
+            include: {
+              nursery: true,
+              user: true,
+            },
+          },
         },
       });
-
-      // Schedule additional maintenance visits if applicable
-      if (rental.maintenanceSchedule) {
-        await this.scheduleMaintenanceVisits(
-          id,
-          rental.nurseryId,
-          endDate,
-          newEndDate,
-          rental.maintenanceSchedule.frequency
-        );
-      }
 
       // Create payment record for extension
       await prisma.payment.create({
         data: {
           userId,
-          type: "RENTAL_PAYMENT",
-          status: "PENDING",
+          orderId: rental.orderId,
+          paymentType: "ORDER" as any,
+          paymentMethod: "CARD",
           amount: additionalTotalCost,
-          currency: "PKR",
-          method: "CARD",
-          rentalId: id,
+          status: "PENDING" as any,
           metadata: {
-            type: "extension",
+            type: "rental_extension",
             weeks: additionalWeeks,
             reason,
           },
@@ -530,8 +445,9 @@ export class RentalsService {
     //   additionalWeeks
     // );
 
+    const rentalDto = this.mapOrderItemToRentalDto(updatedRental);
     return {
-      ...updatedRental,
+      ...rentalDto,
       extensionDetails: {
         additionalWeeks,
         additionalCost: additionalTotalCost,
@@ -548,22 +464,25 @@ export class RentalsService {
   ) {
     const { applyRentalCredit, reason } = convertDto;
 
-    const rental = await this.prisma.rental.findFirst({
+    // Rentals are now OrderItems with orderType=RENT
+    const rental = await this.prisma.orderItem.findFirst({
       where: {
         id,
-        userId,
-        status: "ACTIVE",
+        order: { userId },
+        orderType: "RENT" as any,
+        rentalStatus: "ACTIVE" as any,
       },
       include: {
         plant: true,
-        nursery: true,
-        payments: {
-          where: {
-            status: "COMPLETED",
-            type: "RENTAL_PAYMENT",
+        order: {
+          include: {
+            payments: {
+              where: {
+                status: "COMPLETED" as any,
+              },
+            },
           },
         },
-        user: true,
       },
     });
 
@@ -572,9 +491,9 @@ export class RentalsService {
     }
 
     // Calculate conversion details
-    const purchasePrice = rental.plant.purchasePrice;
-    const paidRentalAmount = rental.payments.reduce(
-      (sum, p) => sum + p.amount,
+    const purchasePrice = Number(rental.plant.buyPrice || 0);
+    const paidRentalAmount = (rental.order.payments || []).reduce(
+      (sum: number, p: any) => sum + Number(p.amount || 0),
       0
     );
 
@@ -587,115 +506,9 @@ export class RentalsService {
       finalPrice = purchasePrice - creditAmount;
     }
 
-    // Create purchase in transaction
-    const result = await this.prisma.$transaction(async (prisma) => {
-      // Create purchase
-      const purchase = await prisma.purchase.create({
-        data: {
-          userId,
-          nurseryId: rental.nurseryId,
-          status: "PENDING",
-          subtotal: purchasePrice,
-          deliveryFee: 0, // No delivery fee for conversion
-          tax: finalPrice * 0.1, // 10% tax
-          totalAmount: finalPrice * 1.1,
-          deliveryAddress: rental.deliveryAddress,
-        },
-      });
-
-      // Create purchase item
-      await prisma.purchaseItem.create({
-        data: {
-          purchaseId: purchase.id,
-          plantId: rental.plantId,
-          quantity: 1,
-          unitPrice: purchasePrice,
-          totalPrice: finalPrice,
-        },
-      });
-
-      // Update rental status
-      await prisma.rental.update({
-        where: { id },
-        data: {
-          status: "COMPLETED",
-          returnedAt: new Date(),
-        },
-      });
-
-      // Cancel remaining maintenance visits
-      if ((rental as any).maintenanceSchedule) {
-        await prisma.maintenanceVisit.updateMany({
-          where: {
-            scheduleId: (rental as any).maintenanceSchedule.id,
-            status: "SCHEDULED",
-          },
-          data: {
-            status: "CANCELLED",
-          },
-        });
-      }
-
-      // Create payment record for purchase
-      await prisma.payment.create({
-        data: {
-          userId,
-          type: "PURCHASE_PAYMENT",
-          status: "PENDING",
-          amount: finalPrice * 1.1,
-          currency: "PKR",
-          method: "CARD",
-          purchaseId: purchase.id,
-          metadata: {
-            type: "rental_conversion",
-            originalRentalId: id,
-            creditApplied: creditAmount,
-            reason,
-          },
-        },
-      });
-
-      // Return security deposit
-      if (rental.securityDeposit > 0) {
-        await prisma.payment.create({
-          data: {
-            userId,
-            type: "REFUND",
-            status: "PENDING",
-            amount: rental.securityDeposit,
-            currency: "PKR",
-            method: "BANK_TRANSFER",
-            rentalId: id,
-            metadata: {
-              type: "security_deposit_refund",
-            },
-          },
-        });
-      }
-
-      return { purchase, rental };
-    });
-
-    // Send conversion confirmation email
-    // await this.emailService.sendPurchaseConversionConfirmation(
-    //   rental.user.email,
-    //   result.purchase,
-    //   rental,
-    //   creditAmount
-    // );
-
-    return {
-      message: "Rental successfully converted to purchase",
-      purchaseId: result.purchase.id,
-      originalRentalId: id,
-      purchaseDetails: {
-        originalPrice: purchasePrice,
-        creditApplied: creditAmount,
-        finalPrice: finalPrice * 1.1,
-        taxAmount: finalPrice * 0.1,
-        securityDepositRefund: rental.securityDeposit,
-      },
-    };
+    // Purchases are now handled through Orders API
+    // This method should redirect to Orders service
+    throw new BadRequestException("Purchases are now handled through the Orders API. Please use POST /api/v1/orders/checkout with order_type=BUY");
   }
 
   async checkAvailability(checkAvailabilityDto: CheckAvailabilityDto) {
@@ -705,17 +518,18 @@ export class RentalsService {
       where: { id: plantId },
       include: {
         nursery: true,
-        rentals: {
+        orderItems: {
           where: {
-            status: {
-              in: ["CONFIRMED", "DELIVERED", "ACTIVE", "EXTENDED"],
+            orderType: "RENT" as any,
+            rentalStatus: {
+              in: ["ACTIVE", "EXTENDED"] as any,
             },
             OR: [
               {
-                startDate: {
+                rentStartDate: {
                   lte: new Date(endDate),
                 },
-                endDate: {
+                rentEndDate: {
                   gte: new Date(startDate),
                 },
               },
@@ -738,11 +552,11 @@ export class RentalsService {
     const durationWeeks = Math.ceil(durationDays / 7);
 
     // Check availability
-    const conflictingRentals = plant.rentals;
+    const conflictingRentals = plant.orderItems || [];
     const rentedQuantity = conflictingRentals.length;
     const availableQuantity = Math.max(
       0,
-      plant.availableStock - rentedQuantity
+      plant.stockQuantity - rentedQuantity
     );
     const isAvailable = availableQuantity >= quantity;
 
@@ -753,11 +567,13 @@ export class RentalsService {
       dateRange.forEach((date) => {
         const dateStr = date.toISOString().split("T")[0];
         const conflictsOnDate = conflictingRentals.filter(
-          (rental) =>
-            new Date(rental.startDate) <= date &&
-            new Date(rental.endDate) >= date
+          (rental: any) =>
+            rental.rentStartDate &&
+            rental.rentEndDate &&
+            new Date(rental.rentStartDate) <= date &&
+            new Date(rental.rentEndDate) >= date
         );
-        if (conflictsOnDate.length >= plant.availableStock) {
+        if (conflictsOnDate.length >= plant.stockQuantity) {
           conflictingDates.push(dateStr);
         }
       });
@@ -770,11 +586,13 @@ export class RentalsService {
       for (let i = 1; i <= 30; i++) {
         futureDate.setDate(futureDate.getDate() + 1);
         const futureConflicts = conflictingRentals.filter(
-          (rental) =>
-            new Date(rental.startDate) <= futureDate &&
-            new Date(rental.endDate) >= futureDate
+          (rental: any) =>
+            rental.rentStartDate &&
+            rental.rentEndDate &&
+            new Date(rental.rentStartDate) <= futureDate &&
+            new Date(rental.rentEndDate) >= futureDate
         );
-        if (futureConflicts.length < plant.availableStock) {
+        if (futureConflicts.length < plant.stockQuantity) {
           nextAvailableDate = futureDate.toISOString().split("T")[0];
           break;
         }
@@ -782,7 +600,7 @@ export class RentalsService {
     }
 
     // Calculate costs
-    const rentalCost = plant.rentalPrice * durationWeeks;
+    const rentalCost = Number(plant.rentPriceMonthly || 0) * (durationWeeks / 4);
     const maintenanceCost = 200 * durationWeeks * 2; // Assuming 2 visits per week
     const estimatedCost = rentalCost + maintenanceCost;
 
@@ -798,12 +616,52 @@ export class RentalsService {
         conflictingDates.length > 0 ? conflictingDates : undefined,
       nextAvailableDate,
       estimatedCost,
-      securityDeposit: plant.securityDeposit,
+      securityDeposit: Number(plant.depositAmount || 0),
       nursery: {
-        id: plant.nursery.id,
-        name: plant.nursery.name,
-        deliveryFee: plant.nursery.deliveryFee,
+        id: plant.nurseryId,
+        name: plant.nursery?.name || "",
+        deliveryFee: 0, // Would need to get from nursery
       },
+    };
+  }
+
+  // Helper methods to transform OrderItem to RentalResponseDto
+  private mapOrderItemToRentalDto(orderItem: any): any {
+    if (!orderItem) return null;
+
+    const startDate = orderItem.rentStartDate || new Date();
+    const endDate = orderItem.rentEndDate || new Date();
+    const durationDays = Math.ceil(
+      (new Date(endDate).getTime() - new Date(startDate).getTime()) / (1000 * 60 * 60 * 24)
+    );
+    const durationWeeks = Math.ceil(durationDays / 7);
+
+    return {
+      id: orderItem.id,
+      userId: orderItem.order?.userId || "",
+      nurseryId: orderItem.order?.nurseryId || orderItem.plant?.nurseryId || "",
+      plantId: orderItem.plantId,
+      duration: durationWeeks,
+      serviceType: "BASIC", // Default, could be enhanced
+      status: orderItem.rentalStatus || "ACTIVE",
+      rentalPrice: Number(orderItem.unitPrice || 0) * durationWeeks,
+      maintenancePrice: 0, // Would need to calculate from maintenance tasks
+      securityDeposit: Number(orderItem.depositPerUnit || 0),
+      totalAmount: Number(orderItem.totalPrice || 0),
+      startDate: startDate,
+      endDate: endDate,
+      deliveredAt: null, // Not stored on OrderItem
+      returnedAt: orderItem.actualReturnDate || null,
+      deliveryAddress: orderItem.order?.deliveryAddress || null,
+      pickupAddress: null,
+      createdAt: orderItem.createdAt,
+      updatedAt: orderItem.updatedAt,
+      plant: orderItem.plant,
+      nursery: orderItem.order?.nursery || orderItem.plant?.nursery,
+      user: orderItem.order?.user,
+      maintenanceSchedule: null, // Not available on OrderItem
+      payments: orderItem.order?.payments || [],
+      delivery: null, // Not available on OrderItem
     };
   }
 
@@ -820,20 +678,31 @@ export class RentalsService {
     endDate: Date,
     quantity: number
   ): Promise<boolean> {
-    const conflictingRentals = await this.prisma.rental.count({
+    const conflictingRentals = await this.prisma.orderItem.count({
       where: {
         plantId,
-        status: {
-          in: ["CONFIRMED", "DELIVERED", "ACTIVE", "EXTENDED"],
+        orderType: "RENT",
+        rentalStatus: {
+          in: ["ACTIVE", "EXTENDED"],
         },
         OR: [
           {
-            startDate: {
-              lte: endDate,
-            },
-            endDate: {
-              gte: startDate,
-            },
+            AND: [
+              { rentStartDate: { lte: startDate } },
+              { rentEndDate: { gte: startDate } },
+            ],
+          },
+          {
+            AND: [
+              { rentStartDate: { lte: endDate } },
+              { rentEndDate: { gte: endDate } },
+            ],
+          },
+          {
+            AND: [
+              { rentStartDate: { gte: startDate } },
+              { rentEndDate: { lte: endDate } },
+            ],
           },
         ],
       },
@@ -841,11 +710,11 @@ export class RentalsService {
 
     const plant = await this.prisma.plant.findUnique({
       where: { id: plantId },
-      select: { availableStock: true },
+      select: { stockQuantity: true },
     });
 
     return plant
-      ? plant.availableStock - conflictingRentals >= quantity
+      ? plant.stockQuantity - conflictingRentals >= quantity
       : false;
   }
 
@@ -854,14 +723,10 @@ export class RentalsService {
     newStatus: RentalStatus
   ) {
     const validTransitions: Record<RentalStatus, RentalStatus[]> = {
-      PENDING: ["CONFIRMED", "CANCELLED"],
-      CONFIRMED: ["DELIVERED", "CANCELLED"],
-      DELIVERED: ["ACTIVE", "CANCELLED"],
-      ACTIVE: ["EXTENDED", "RETURNED", "COMPLETED"],
-      EXTENDED: ["RETURNED", "COMPLETED"],
-      RETURNED: ["COMPLETED"],
-      COMPLETED: [],
-      CANCELLED: [],
+      ACTIVE: ["EXTENDED", "RETURNED"],
+      EXTENDED: ["RETURNED"],
+      RETURNED: [],
+      OVERDUE: ["RETURNED"],
     };
 
     if (!validTransitions[currentStatus].includes(newStatus)) {
@@ -873,42 +738,38 @@ export class RentalsService {
 
   private async handleStatusChange(rental: any, newStatus: RentalStatus) {
     switch (newStatus) {
-      case "DELIVERED":
-        await this.prisma.rental.update({
-          where: { id: rental.id },
-          data: { deliveredAt: new Date() },
-        });
-        break;
-
       case "RETURNED":
-        await this.prisma.rental.update({
+        await this.prisma.orderItem.update({
           where: { id: rental.id },
-          data: { returnedAt: new Date() },
+          data: {
+            rentalStatus: "RETURNED" as any,
+            actualReturnDate: new Date(),
+          },
         });
 
         // Restore plant stock
         await this.prisma.plant.update({
           where: { id: rental.plantId },
           data: {
-            availableStock: {
-              increment: 1,
+            stockQuantity: {
+              increment: rental.quantity,
             },
           },
         });
         break;
 
-      case "CANCELLED":
-        // Restore plant stock if not yet delivered
-        if (rental.status !== "DELIVERED" && rental.status !== "ACTIVE") {
-          await this.prisma.plant.update({
-            where: { id: rental.plantId },
-            data: {
-              availableStock: {
-                increment: 1,
-              },
-            },
-          });
-        }
+      case "EXTENDED":
+        // Extension is handled in extendRental method
+        break;
+
+      default:
+        // Update status only
+        await this.prisma.orderItem.update({
+          where: { id: rental.id },
+          data: {
+            rentalStatus: newStatus as any,
+          },
+        });
         break;
     }
   }
@@ -943,9 +804,9 @@ export class RentalsService {
     }
 
     if (visits.length > 0) {
-      await this.prisma.maintenanceVisit.createMany({
-        data: visits,
-      });
+      // Maintenance visits are now MaintenanceTasks
+      // This would be created when gardener is assigned
+      // Maintenance tasks are created through the Tasks service
     }
   }
 

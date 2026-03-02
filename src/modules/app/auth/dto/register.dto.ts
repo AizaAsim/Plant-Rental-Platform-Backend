@@ -1,4 +1,4 @@
-import { ApiProperty } from "@nestjs/swagger";
+import { ApiProperty, ApiPropertyOptional } from "@nestjs/swagger";
 import {
   IsEmail,
   IsString,
@@ -7,6 +7,8 @@ import {
   IsEnum,
   Matches,
   IsNotEmpty,
+  IsBoolean,
+  ValidateIf,
 } from "class-validator";
 import { UserRole } from "@prisma/client";
 
@@ -18,22 +20,6 @@ export class RegisterDto {
   @IsEmail({}, { message: "Please provide a valid email" })
   @IsNotEmpty()
   email: string;
-
-  @ApiProperty({
-    example: "John",
-    description: "User first name",
-  })
-  @IsString()
-  @IsNotEmpty()
-  firstName: string;
-
-  @ApiProperty({
-    example: "Doe",
-    description: "User last name",
-  })
-  @IsString()
-  @IsNotEmpty()
-  lastName: string;
 
   @ApiProperty({
     example: "SecurePass123!",
@@ -50,24 +36,54 @@ export class RegisterDto {
   password: string;
 
   @ApiProperty({
-    example: "+923001234567",
-    description: "User phone number (optional)",
-    required: false,
+    example: "John Doe",
+    description: "User full name",
   })
-  @IsOptional()
   @IsString()
+  @IsNotEmpty()
+  full_name: string;
+
+  @ApiProperty({
+    example: "+923001234567",
+    description: "User phone number",
+  })
+  @IsString()
+  @IsNotEmpty()
   @Matches(/^\+?[1-9]\d{1,14}$/, {
     message: "Please provide a valid phone number",
   })
-  phone?: string;
+  phone: string;
 
   @ApiProperty({
     enum: UserRole,
-    default: UserRole.USER,
+    example: UserRole.USER,
     description: "User role",
-    required: false,
+  })
+  @IsEnum(UserRole)
+  role: UserRole;
+
+  @ApiPropertyOptional({
+    example: false,
+    description: "Is corporate user (for USER role)",
   })
   @IsOptional()
-  @IsEnum(UserRole)
-  role?: UserRole;
+  @IsBoolean()
+  is_corporate?: boolean;
+
+  @ApiPropertyOptional({
+    example: "Acme Corp",
+    description: "Company name (required if is_corporate is true)",
+  })
+  @ValidateIf((o) => o.is_corporate === true)
+  @IsString()
+  @IsNotEmpty()
+  company_name?: string;
+
+  @ApiPropertyOptional({
+    example: "GST123456789",
+    description: "GST number",
+  })
+  @IsOptional()
+  @IsString()
+  gst_number?: string;
 }
