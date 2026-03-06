@@ -72,7 +72,9 @@ export class AuthService {
 
       // Validate corporate user requirements
       if (is_corporate && !company_name) {
-        throw new BadRequestException("Company name is required for corporate users");
+        throw new BadRequestException(
+          "Company name is required for corporate users"
+        );
       }
 
       // Hash password
@@ -89,7 +91,8 @@ export class AuthService {
           isCorporate: is_corporate || false,
           companyName: company_name,
           gstNumber: gst_number,
-          isVerified: false,
+          // isVerified: false,
+          isVerified: true,
         },
         select: {
           id: true,
@@ -195,7 +198,7 @@ export class AuthService {
     // Rate limiting: max 3 per 10 minutes
     const rateLimitKey = `otp:resend:${identifier}:${purpose}`;
     const resendCount = await this.redis.get(rateLimitKey);
-    
+
     if (resendCount && parseInt(resendCount) >= 3) {
       throw new HttpException(
         "Maximum OTP resend attempts reached. Please try again later.",
@@ -467,7 +470,8 @@ export class AuthService {
   }
 
   async changePassword(userId: string, changePasswordDto: ChangePasswordDto) {
-    const { currentPassword: current_password, newPassword: new_password } = changePasswordDto;
+    const { currentPassword: current_password, newPassword: new_password } =
+      changePasswordDto;
 
     // Get user
     const user = await this.prisma.user.findUnique({
