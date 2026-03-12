@@ -3,8 +3,8 @@ import {
   Injectable,
   NotFoundException,
   BadRequestException,
-  ForbiddenException,
   ConflictException,
+  ForbiddenException,
 } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
 import { PrismaService } from "src/prisma/prisma.service";
@@ -14,36 +14,21 @@ import { Decimal } from "@prisma/client/runtime/library";
 export class GardenersService {
   constructor(private prisma: PrismaService) {}
 
-  // POST /api/v1/gardeners/profile
-  async createProfile(gardenerId: string, createDto: any) {
-    const {
-      bio,
-      experience_years,
-      hourly_rate,
-      is_freelancer,
-      skills,
-      service_areas,
-      availability,
-    } = createDto;
+  // ─── Create Profile ─────────────────────────────────────────────────────────
 
-    // Check if profile already exists
-    const existing = await this.prisma.gardener.findUnique({
-      where: { userId: gardenerId },
-    });
+  async createProfile(userId: string, createDto: any) {
+    const { bio, experience_years, hourly_rate, is_freelancer, skills, service_areas, availability } = createDto;
 
-    if (existing) {
-      throw new ConflictException("Gardener profile already exists");
-    }
+    const existing = await this.prisma.gardener.findUnique({ where: { userId } });
+    if (existing) throw new ConflictException("Gardener profile already exists");
 
-    // Validate freelancer requirements
     if (is_freelancer && !hourly_rate) {
       throw new BadRequestException("Hourly rate is required for freelancers");
     }
 
-    // Create gardener profile
-    const gardener = await this.prisma.gardener.create({
+    return this.prisma.gardener.create({
       data: {
-        userId: gardenerId,
+        userId,
         bio,
         experienceYears: experience_years || 0,
         hourlyRate: hourly_rate ? new Decimal(hourly_rate) : null,
@@ -51,19 +36,11 @@ export class GardenersService {
         isAvailable: true,
         skills: {
           create: skills?.map((skillName: string) => ({
-            skill: {
-              connectOrCreate: {
-                where: { name: skillName },
-                create: { name: skillName },
-              },
-            },
+            skill: { connectOrCreate: { where: { name: skillName }, create: { name: skillName } } },
           })) || [],
         },
         serviceAreas: {
-          create: service_areas?.map((area: any) => ({
-            pincode: area.pincode,
-            city: area.city,
-          })) || [],
+          create: service_areas?.map((area: any) => ({ pincode: area.pincode, city: area.city })) || [],
         },
         availability: {
           create: availability?.map((avail: any) => ({
@@ -75,68 +52,29 @@ export class GardenersService {
         },
       },
       include: {
-        skills: {
-          include: {
-            skill: true,
-          },
-        },
+        skills: { include: { skill: true } },
         serviceAreas: true,
         availability: true,
-        user: {
-          select: {
-            id: true,
-            fullName: true,
-            email: true,
-            phone: true,
-            avatarUrl: true,
-          },
-        },
+        user: { select: { id: true, fullName: true, email: true, phone: true, avatarUrl: true } },
       },
     });
-
-    return gardener;
   }
 
-  // GET /api/v1/gardeners/profile
-  async getProfile(gardenerId: string) {
+  // ─── Get Own Profile ────────────────────────────────────────────────────────
+
+  async getProfile(userId: string) {
     const gardener = await this.prisma.gardener.findUnique({
-      where: { userId: gardenerId },
+      where: { userId },
       include: {
-        skills: {
-          include: {
-            skill: true,
-          },
-        },
+        skills: { include: { skill: true } },
         serviceAreas: true,
         availability: true,
-        nursery: {
-          select: {
-            id: true,
-            name: true,
-            city: true,
-          },
-        },
-        user: {
-          select: {
-            id: true,
-            fullName: true,
-            email: true,
-            phone: true,
-            avatarUrl: true,
-          },
-        },
-        _count: {
-          select: {
-            serviceBookings: true,
-            maintenanceTasks: true,
-          },
-        },
+        nursery: { select: { id: true, name: true, city: true } },
+        user: { select: { id: true, fullName: true, email: true, phone: true, avatarUrl: true } },
+        _count: { select: { serviceBookings: true, maintenanceTasks: true } },
       },
     });
-
-    if (!gardener) {
-      throw new NotFoundException("Gardener profile not found");
-    }
+    if (!gardener) throw new NotFoundException("Gardener profile not found");
 
     return {
       ...gardener,
@@ -147,33 +85,18 @@ export class GardenersService {
     };
   }
 
-  // PUT /api/v1/gardeners/profile
-  async updateProfile(gardenerId: string, updateDto: any) {
-    const gardener = await this.prisma.gardener.findUnique({
-      where: { userId: gardenerId },
-    });
+  // ─── Update Profile ─────────────────────────────────────────────────────────
 
-    if (!gardener) {
-      throw new NotFoundException("Gardener profile not found");
-    }
+  async updateProfile(userId: string, updateDto: any) {
+    const gardener = await this.prisma.gardener.findUnique({ where: { userId } });
+    if (!gardener) throw new NotFoundException("Gardener profile not found");
 
-    const {
-      bio,
-      experience_years,
-      hourly_rate,
-      is_freelancer,
-    } = updateDto;
-
+    const { bio, experience_years, hourly_rate, is_freelancer } = updateDto;
     const updateData: Prisma.GardenerUpdateInput = {};
 
     if (bio !== undefined) updateData.bio = bio;
-    if (experience_years !== undefined) updateData.experienceYears = experience_years;
-    if (hourly_rate !== undefined) {
-      if (is_freelancer !== false && !hourly_rate) {
-        throw new BadRequestException("Hourly rate is required for freelancers");
-      }
-      updateData.hourlyRate = hourly_rate ? new Decimal(hourly_rate) : null;
-    }
+    if (experience_years !== undefined) updateData.experienceYears = Number(experience_years);
+    if (hourly_rate !== undefined) updateData.hourlyRate = hourly_rate ? new Decimal(Number(hourly_rate)) : null;
     if (is_freelancer !== undefined) {
       updateData.isFreelancer = is_freelancer;
       if (is_freelancer && !hourly_rate && !gardener.hourlyRate) {
@@ -181,42 +104,23 @@ export class GardenersService {
       }
     }
 
-    const updated = await this.prisma.gardener.update({
-      where: { userId: gardenerId },
+    return this.prisma.gardener.update({
+      where: { userId },
       data: updateData,
-      include: {
-        skills: {
-          include: {
-            skill: true,
-          },
-        },
-        serviceAreas: true,
-        availability: true,
-      },
+      include: { skills: { include: { skill: true } }, serviceAreas: true, availability: true },
     });
-
-    return updated;
   }
 
-  // PUT /api/v1/gardeners/availability
-  async updateAvailability(gardenerId: string, availabilityDto: any) {
-    const gardener = await this.prisma.gardener.findUnique({
-      where: { userId: gardenerId },
-    });
+  // ─── Update Availability ────────────────────────────────────────────────────
 
-    if (!gardener) {
-      throw new NotFoundException("Gardener profile not found");
-    }
+  async updateAvailability(userId: string, availabilityDto: any) {
+    const gardener = await this.prisma.gardener.findUnique({ where: { userId } });
+    if (!gardener) throw new NotFoundException("Gardener profile not found");
 
     const { availability } = availabilityDto;
+    await this.prisma.gardenerAvailability.deleteMany({ where: { gardenerId: gardener.id } });
 
-    // Delete existing availability
-    await this.prisma.gardenerAvailability.deleteMany({
-      where: { gardenerId: gardener.id },
-    });
-
-    // Create new availability
-    if (availability && availability.length > 0) {
+    if (availability?.length) {
       await this.prisma.gardenerAvailability.createMany({
         data: availability.map((avail: any) => ({
           gardenerId: gardener.id,
@@ -228,371 +132,196 @@ export class GardenersService {
       });
     }
 
-    const updated = await this.prisma.gardener.findUnique({
-      where: { id: gardener.id },
-      include: {
-        availability: true,
-      },
-    });
-
-    return updated;
+    return this.prisma.gardener.findUnique({ where: { id: gardener.id }, include: { availability: true } });
   }
 
-  // PUT /api/v1/gardeners/service-areas
-  async updateServiceAreas(gardenerId: string, serviceAreasDto: any) {
-    const gardener = await this.prisma.gardener.findUnique({
-      where: { userId: gardenerId },
-    });
+  // ─── Update Service Areas ───────────────────────────────────────────────────
 
-    if (!gardener) {
-      throw new NotFoundException("Gardener profile not found");
-    }
+  async updateServiceAreas(userId: string, serviceAreasDto: any) {
+    const gardener = await this.prisma.gardener.findUnique({ where: { userId } });
+    if (!gardener) throw new NotFoundException("Gardener profile not found");
 
     const { service_areas } = serviceAreasDto;
+    await this.prisma.gardenerServiceArea.deleteMany({ where: { gardenerId: gardener.id } });
 
-    // Delete existing service areas
-    await this.prisma.gardenerServiceArea.deleteMany({
-      where: { gardenerId: gardener.id },
-    });
-
-    // Create new service areas
-    if (service_areas && service_areas.length > 0) {
+    if (service_areas?.length) {
       await this.prisma.gardenerServiceArea.createMany({
-        data: service_areas.map((area: any) => ({
-          gardenerId: gardener.id,
-          pincode: area.pincode,
-          city: area.city,
-        })),
+        data: service_areas.map((area: any) => ({ gardenerId: gardener.id, pincode: area.pincode, city: area.city })),
       });
     }
 
-    const updated = await this.prisma.gardener.findUnique({
-      where: { id: gardener.id },
-      include: {
-        serviceAreas: true,
-      },
-    });
-
-    return updated;
+    return this.prisma.gardener.findUnique({ where: { id: gardener.id }, include: { serviceAreas: true } });
   }
 
-  // POST /api/v1/gardeners/skills
-  async addSkills(gardenerId: string, skillsDto: any) {
+  // ─── Skills ─────────────────────────────────────────────────────────────────
+
+  async addSkills(userId: string, skillsDto: any) {
     const { skill_ids } = skillsDto;
+    const gardener = await this.prisma.gardener.findUnique({ where: { userId } });
+    if (!gardener) throw new NotFoundException("Gardener profile not found");
 
-    const gardener = await this.prisma.gardener.findUnique({
-      where: { userId: gardenerId },
-    });
-
-    if (!gardener) {
-      throw new NotFoundException("Gardener profile not found");
-    }
-
-    // Get skill names from IDs or create if names provided
-    const skillsToAdd = [];
     for (const skillIdOrName of skill_ids) {
-      // Check if it's an ID or name
-      const skill = await this.prisma.gardenerSkill.findFirst({
-        where: {
-          OR: [
-            { id: skillIdOrName },
-            { name: skillIdOrName },
-          ],
-        },
+      let skill = await this.prisma.gardenerSkill.findFirst({
+        where: { OR: [{ id: skillIdOrName }, { name: skillIdOrName }] },
       });
-
-      if (skill) {
-        skillsToAdd.push(skill.id);
-      } else {
-        // Create new skill
-        const newSkill = await this.prisma.gardenerSkill.create({
-          data: { name: skillIdOrName },
-        });
-        skillsToAdd.push(newSkill.id);
+      if (!skill) {
+        skill = await this.prisma.gardenerSkill.create({ data: { name: skillIdOrName } });
       }
-    }
-
-    // Add skills (skip if already exists)
-    for (const skillId of skillsToAdd) {
       await this.prisma.gardenerSkillMapping.upsert({
-        where: {
-          gardenerId_skillId: {
-            gardenerId: gardener.id,
-            skillId,
-          },
-        },
-        create: {
-          gardenerId: gardener.id,
-          skillId,
-        },
+        where: { gardenerId_skillId: { gardenerId: gardener.id, skillId: skill.id } },
+        create: { gardenerId: gardener.id, skillId: skill.id },
         update: {},
       });
     }
 
-    const updated = await this.prisma.gardener.findUnique({
+    return this.prisma.gardener.findUnique({
       where: { id: gardener.id },
-      include: {
-        skills: {
-          include: {
-            skill: true,
-          },
-        },
-      },
+      include: { skills: { include: { skill: true } } },
     });
-
-    return updated;
   }
 
-  // DELETE /api/v1/gardeners/skills/{skill_id}
-  async removeSkill(gardenerId: string, skillId: string) {
-    const gardener = await this.prisma.gardener.findUnique({
-      where: { userId: gardenerId },
-    });
+  async removeSkill(userId: string, skillId: string) {
+    const gardener = await this.prisma.gardener.findUnique({ where: { userId } });
+    if (!gardener) throw new NotFoundException("Gardener profile not found");
 
-    if (!gardener) {
-      throw new NotFoundException("Gardener profile not found");
-    }
+    await this.prisma.gardenerSkillMapping.deleteMany({ where: { gardenerId: gardener.id, skillId } });
 
-    await this.prisma.gardenerSkillMapping.deleteMany({
-      where: {
-        gardenerId: gardener.id,
-        skillId,
-      },
-    });
-
-    const updated = await this.prisma.gardener.findUnique({
+    return this.prisma.gardener.findUnique({
       where: { id: gardener.id },
-      include: {
-        skills: {
-          include: {
-            skill: true,
-          },
-        },
-      },
+      include: { skills: { include: { skill: true } } },
     });
-
-    return updated;
   }
 
-  // GET /api/v1/gardeners/freelance
+  async getAllSkills() {
+    return this.prisma.gardenerSkill.findMany({
+      orderBy: { name: "asc" },
+      include: { _count: { select: { gardeners: true } } },
+    });
+  }
+
+  // ─── Browse Freelance ───────────────────────────────────────────────────────
+
   async browseFreelance(filterDto: any) {
     const {
-      page = 1,
-      limit = 20,
-      pincode,
-      city,
-      skill_ids,
-      rating_min,
-      hourly_rate_min,
-      hourly_rate_max,
-      available_date,
-      available_time,
-      sort_by = "rating",
+      page = 1, limit = 20, pincode, city, skill_ids,
+      rating_min, hourly_rate_min, hourly_rate_max,
+      available_date, available_time, sort_by = "rating",
     } = filterDto;
+
+    const parsedPage = Number(page);
+    const parsedLimit = Number(limit);
+    const parsedRatingMin = rating_min ? Number(rating_min) : undefined;
+    const parsedRateMin = hourly_rate_min ? Number(hourly_rate_min) : undefined;
+    const parsedRateMax = hourly_rate_max ? Number(hourly_rate_max) : undefined;
+    const skillIdsArray = skill_ids
+      ? Array.isArray(skill_ids) ? skill_ids : [skill_ids]
+      : undefined;
 
     const where: Prisma.GardenerWhereInput = {
       isFreelancer: true,
       isAvailable: true,
-      ...(pincode && {
-        serviceAreas: {
-          some: {
-            pincode,
-          },
-        },
-      }),
-      ...(city && {
-        serviceAreas: {
-          some: {
-            city: { contains: city, mode: "insensitive" },
-          },
-        },
-      }),
-      ...(skill_ids && Array.isArray(skill_ids) && skill_ids.length > 0 && {
-        skills: {
-          some: {
-            skillId: { in: skill_ids },
-          },
-        },
-      }),
-      ...(rating_min && { ratingAvg: { gte: new Decimal(rating_min) } }),
-      ...(hourly_rate_min && { hourlyRate: { gte: new Decimal(hourly_rate_min) } }),
-      ...(hourly_rate_max && { hourlyRate: { lte: new Decimal(hourly_rate_max) } }),
+      ...(pincode && { serviceAreas: { some: { pincode } } }),
+      ...(city && { serviceAreas: { some: { city: { contains: city, mode: "insensitive" } } } }),
+      ...(skillIdsArray?.length && { skills: { some: { skillId: { in: skillIdsArray } } } }),
+      ...(parsedRatingMin !== undefined && { ratingAvg: { gte: new Decimal(parsedRatingMin) } }),
+      ...(parsedRateMin !== undefined && { hourlyRate: { gte: new Decimal(parsedRateMin) } }),
+      ...(parsedRateMax !== undefined && { hourlyRate: { lte: new Decimal(parsedRateMax) } }),
     };
 
     let orderBy: Prisma.GardenerOrderByWithRelationInput = {};
     switch (sort_by) {
-      case "price":
-        orderBy = { hourlyRate: "asc" };
-        break;
-      case "experience":
-        orderBy = { experienceYears: "desc" };
-        break;
-      case "rating":
-      default:
-        orderBy = { ratingAvg: "desc" };
+      case "price":      orderBy = { hourlyRate: "asc" }; break;
+      case "experience": orderBy = { experienceYears: "desc" }; break;
+      default:           orderBy = { ratingAvg: "desc" };
     }
 
-    const skip = (page - 1) * limit;
-
+    const skip = (parsedPage - 1) * parsedLimit;
     const [gardeners, total] = await Promise.all([
       this.prisma.gardener.findMany({
-        where,
-        skip,
-        take: limit,
-        orderBy,
+        where, skip, take: parsedLimit, orderBy,
         include: {
-          skills: {
-            include: {
-              skill: true,
-            },
-          },
+          skills: { include: { skill: true } },
           serviceAreas: true,
           availability: true,
-          user: {
-            select: {
-              id: true,
-              fullName: true,
-              avatarUrl: true,
-            },
-          },
+          user: { select: { id: true, fullName: true, avatarUrl: true } },
         },
       }),
       this.prisma.gardener.count({ where }),
     ]);
 
-    // Filter by availability if date/time provided
     let filteredGardeners = gardeners;
     if (available_date) {
-      const date = new Date(available_date);
-      const dayOfWeek = date.getDay();
-
-      filteredGardeners = gardeners.filter((gardener) => {
-        const dayAvailability = gardener.availability.find(
-          (avail) => avail.dayOfWeek === dayOfWeek && avail.isAvailable
-        );
-
-        if (!dayAvailability) return false;
-
+      const dayOfWeek = new Date(available_date).getDay();
+      filteredGardeners = gardeners.filter((g) => {
+        const dayAvail = g.availability.find((a) => a.dayOfWeek === dayOfWeek && a.isAvailable);
+        if (!dayAvail) return false;
         if (available_time) {
-          const requestedTime = available_time;
-          const startTime = dayAvailability.startTime || "00:00";
-          const endTime = dayAvailability.endTime || "23:59";
-
-          return requestedTime >= startTime && requestedTime <= endTime;
+          const start = dayAvail.startTime || "00:00";
+          const end = dayAvail.endTime || "23:59";
+          return available_time >= start && available_time <= end;
         }
-
         return true;
       });
     }
 
     return {
       items: filteredGardeners,
-      pagination: {
-        page,
-        limit,
-        total,
-        totalPages: Math.ceil(total / limit),
-      },
+      pagination: { page: parsedPage, limit: parsedLimit, total, totalPages: Math.ceil(total / parsedLimit) },
     };
   }
 
-  // GET /api/v1/gardeners/{gardener_id}
+  // ─── Public Gardener Profile ────────────────────────────────────────────────
+
   async getGardenerById(gardenerId: string) {
     const gardener = await this.prisma.gardener.findUnique({
       where: { id: gardenerId },
       include: {
-        skills: {
-          include: {
-            skill: true,
-          },
-        },
+        skills: { include: { skill: true } },
         serviceAreas: true,
         availability: true,
-        nursery: {
-          select: {
-            id: true,
-            name: true,
-            city: true,
-          },
-        },
-        user: {
-          select: {
-            id: true,
-            fullName: true,
-            email: true,
-            phone: true,
-            avatarUrl: true,
-          },
-        },
-        _count: {
-          select: {
-            serviceBookings: true,
-            maintenanceTasks: true,
-          },
-        },
+        nursery: { select: { id: true, name: true, city: true } },
+        user: { select: { id: true, fullName: true, email: true, phone: true, avatarUrl: true } },
+        _count: { select: { serviceBookings: true, maintenanceTasks: true } },
       },
     });
-
-    if (!gardener) {
-      throw new NotFoundException("Gardener not found");
-    }
-
+    if (!gardener) throw new NotFoundException("Gardener not found");
     return gardener;
   }
 
-  // GET /api/v1/gardeners/{gardener_id}/reviews
+  // ─── Reviews ────────────────────────────────────────────────────────────────
+
   async getGardenerReviews(gardenerId: string, filterDto: any) {
     const { page = 1, limit = 20, rating } = filterDto;
+    const parsedPage = Number(page);
+    const parsedLimit = Number(limit);
 
-    const gardener = await this.prisma.gardener.findUnique({
-      where: { id: gardenerId },
-    });
-
-    if (!gardener) {
-      throw new NotFoundException("Gardener not found");
-    }
+    const gardener = await this.prisma.gardener.findUnique({ where: { id: gardenerId } });
+    if (!gardener) throw new NotFoundException("Gardener not found");
 
     const where: Prisma.ReviewWhereInput = {
       reviewableType: "GARDENER",
       reviewableId: gardenerId,
       isActive: true,
-      ...(rating && { rating: parseInt(rating) }),
+      ...(rating && { rating: Number(rating) }),
     };
 
-    const skip = (page - 1) * limit;
-
+    const skip = (parsedPage - 1) * parsedLimit;
     const [reviews, total] = await Promise.all([
       this.prisma.review.findMany({
-        where,
-        skip,
-        take: limit,
-        orderBy: { createdAt: "desc" },
-        include: {
-          user: {
-            select: {
-              id: true,
-              fullName: true,
-              avatarUrl: true,
-            },
-          },
-          images: true,
-        },
+        where, skip, take: parsedLimit, orderBy: { createdAt: "desc" },
+        include: { user: { select: { id: true, fullName: true, avatarUrl: true } }, images: true },
       }),
       this.prisma.review.count({ where }),
     ]);
 
     return {
       items: reviews,
-      pagination: {
-        page,
-        limit,
-        total,
-        totalPages: Math.ceil(total / limit),
-      },
+      pagination: { page: parsedPage, limit: parsedLimit, total, totalPages: Math.ceil(total / parsedLimit) },
     };
   }
 
-  // GET /api/v1/gardeners/{gardener_id}/availability
+  // ─── Availability ───────────────────────────────────────────────────────────
+
   async checkAvailability(gardenerId: string, filterDto: any) {
     const { date, duration_hours } = filterDto;
 
@@ -600,200 +329,164 @@ export class GardenersService {
       where: { id: gardenerId },
       include: {
         availability: true,
-        serviceBookings: {
-          where: {
-            status: {
-              in: ["CONFIRMED", "IN_PROGRESS"],
-            },
-          },
-        },
+        serviceBookings: { where: { status: { in: ["CONFIRMED", "IN_PROGRESS"] } } },
       },
     });
-
-    if (!gardener) {
-      throw new NotFoundException("Gardener not found");
-    }
+    if (!gardener) throw new NotFoundException("Gardener not found");
 
     if (!gardener.isAvailable || !gardener.isFreelancer) {
-      return {
-        available: false,
-        reason: "Gardener is not available for freelance work",
-      };
+      return { available: false, reason: "Gardener is not available for freelance work" };
     }
 
     if (!date) {
-      // Return general availability
-      return {
-        availability: gardener.availability,
-        is_available: gardener.isAvailable,
-      };
+      return { availability: gardener.availability, is_available: gardener.isAvailable };
     }
 
     const requestedDate = new Date(date);
     const dayOfWeek = requestedDate.getDay();
-
-    // Check day availability
     const dayAvailability = gardener.availability.find(
-      (avail) => avail.dayOfWeek === dayOfWeek && avail.isAvailable
+      (a) => a.dayOfWeek === dayOfWeek && a.isAvailable
     );
+    if (!dayAvailability) return { available: false, reason: "Not available on this day" };
 
-    if (!dayAvailability) {
-      return {
-        available: false,
-        reason: "Not available on this day",
-      };
-    }
-
-    // Check existing bookings
-    const conflictingBookings = gardener.serviceBookings.filter((booking) => {
-      const bookingDate = new Date(booking.serviceDate);
-      return (
-        bookingDate.toDateString() === requestedDate.toDateString() &&
-        ["CONFIRMED", "IN_PROGRESS"].includes(booking.status)
-      );
+    const conflictingBookings = gardener.serviceBookings.filter((b) => {
+      return new Date(b.serviceDate).toDateString() === requestedDate.toDateString();
     });
 
-    // Generate available time slots
     const startTime = dayAvailability.startTime || "09:00";
     const endTime = dayAvailability.endTime || "18:00";
-    const slots = this.generateTimeSlots(startTime, endTime, duration_hours || 2);
+    const slots = this.generateTimeSlots(startTime, endTime, Number(duration_hours) || 2);
 
-    // Filter out conflicting slots
     const availableSlots = slots.filter((slot) => {
-      return !conflictingBookings.some((booking) => {
-        const bookingStart = booking.serviceTime;
-        const bookingEnd = this.addHours(bookingStart, Number(booking.durationHours));
+      return !conflictingBookings.some((b) => {
+        const bStart = b.serviceTime;
+        const bEnd = this.addHours(bStart, Number(b.durationHours));
         return (
-          (slot.start >= bookingStart && slot.start < bookingEnd) ||
-          (slot.end > bookingStart && slot.end <= bookingEnd)
+          (slot.start >= bStart && slot.start < bEnd) ||
+          (slot.end > bStart && slot.end <= bEnd)
         );
       });
     });
 
-    return {
-      available: availableSlots.length > 0,
-      available_slots: availableSlots,
-      day_availability: dayAvailability,
-    };
+    return { available: availableSlots.length > 0, available_slots: availableSlots, day_availability: dayAvailability };
   }
 
-  // POST /api/v1/gardeners/nursery-invitation/{invitation_id}/accept
-  async acceptNurseryInvitation(gardenerId: string, invitationId: string) {
-    // Note: This assumes there's a nursery invitation system
-    // For now, we'll implement a simplified version
-    const gardener = await this.prisma.gardener.findUnique({
-      where: { userId: gardenerId },
-    });
+  // ─── Invitation System ──────────────────────────────────────────────────────
 
-    if (!gardener) {
-      throw new NotFoundException("Gardener profile not found");
-    }
+  async getGardenerInvitations(userId: string) {
+    const gardener = await this.prisma.gardener.findUnique({ where: { userId } });
+    if (!gardener) throw new NotFoundException("Gardener profile not found");
 
-    // In a real system, you'd fetch the invitation and get nurseryId from it
-    // For now, this is a placeholder
-    throw new BadRequestException("Nursery invitation system not yet implemented");
-  }
-
-  // POST /api/v1/gardeners/nursery-invitation/{invitation_id}/decline
-  async declineNurseryInvitation(gardenerId: string, invitationId: string) {
-    // Placeholder
-    return { message: "Invitation declined" };
-  }
-
-  // POST /api/v1/gardeners/leave-nursery
-  async leaveNursery(gardenerId: string) {
-    const gardener = await this.prisma.gardener.findUnique({
-      where: { userId: gardenerId },
+    return this.prisma.nurseryInvitation.findMany({
+      where: { gardenerId: gardener.id },
+      orderBy: { createdAt: "desc" },
       include: {
-        maintenanceTasks: {
-          where: {
-            status: {
-              in: ["PENDING", "ASSIGNED", "ACCEPTED", "IN_PROGRESS"],
-            },
-          },
+        nursery: {
+          select: { id: true, name: true, city: true, logoUrl: true, phone: true },
         },
       },
     });
+  }
 
-    if (!gardener) {
-      throw new NotFoundException("Gardener profile not found");
+  async acceptNurseryInvitation(userId: string, invitationId: string) {
+    const gardener = await this.prisma.gardener.findUnique({ where: { userId } });
+    if (!gardener) throw new NotFoundException("Gardener profile not found");
+
+    const invitation = await this.prisma.nurseryInvitation.findUnique({
+      where: { id: invitationId },
+    });
+    if (!invitation) throw new NotFoundException("Invitation not found");
+    if (invitation.gardenerId !== gardener.id) throw new ForbiddenException();
+    if (invitation.status !== "PENDING") {
+      throw new BadRequestException(`Invitation is already ${invitation.status.toLowerCase()}`);
+    }
+    if (invitation.expiresAt < new Date()) {
+      throw new BadRequestException("Invitation has expired");
     }
 
-    if (!gardener.nurseryId) {
-      throw new BadRequestException("Gardener is not assigned to any nursery");
+    await this.prisma.$transaction([
+      this.prisma.gardener.update({
+        where: { id: gardener.id },
+        data: { nurseryId: invitation.nurseryId },
+      }),
+      this.prisma.nurseryInvitation.update({
+        where: { id: invitationId },
+        data: { status: "ACCEPTED" },
+      }),
+    ]);
+
+    return { message: "Invitation accepted — you are now assigned to the nursery" };
+  }
+
+  async declineNurseryInvitation(userId: string, invitationId: string) {
+    const gardener = await this.prisma.gardener.findUnique({ where: { userId } });
+    if (!gardener) throw new NotFoundException("Gardener profile not found");
+
+    const invitation = await this.prisma.nurseryInvitation.findUnique({
+      where: { id: invitationId },
+    });
+    if (!invitation) throw new NotFoundException("Invitation not found");
+    if (invitation.gardenerId !== gardener.id) throw new ForbiddenException();
+    if (invitation.status !== "PENDING") {
+      throw new BadRequestException(`Invitation is already ${invitation.status.toLowerCase()}`);
     }
 
+    await this.prisma.nurseryInvitation.update({
+      where: { id: invitationId },
+      data: { status: "DECLINED" },
+    });
+
+    return { message: "Invitation declined" };
+  }
+
+  // ─── Leave Nursery ──────────────────────────────────────────────────────────
+
+  async leaveNursery(userId: string) {
+    const gardener = await this.prisma.gardener.findUnique({
+      where: { userId },
+      include: {
+        maintenanceTasks: {
+          where: { status: { in: ["PENDING", "ASSIGNED", "ACCEPTED", "IN_PROGRESS"] } },
+        },
+      },
+    });
+    if (!gardener) throw new NotFoundException("Gardener profile not found");
+    if (!gardener.nurseryId) throw new BadRequestException("Gardener is not assigned to any nursery");
     if (gardener.maintenanceTasks.length > 0) {
       throw new BadRequestException("Cannot leave nursery with pending tasks");
     }
 
-    const updated = await this.prisma.gardener.update({
-      where: { id: gardener.id },
-      data: { nurseryId: null },
-    });
-
-    return updated;
+    return this.prisma.gardener.update({ where: { id: gardener.id }, data: { nurseryId: null } });
   }
 
-  // GET /api/v1/gardeners/skills/all
-  async getAllSkills() {
-    const skills = await this.prisma.gardenerSkill.findMany({
-      orderBy: { name: "asc" },
-      include: {
-        _count: {
-          select: {
-            gardeners: true,
-          },
-        },
-      },
-    });
+  // ─── Helpers ────────────────────────────────────────────────────────────────
 
-    return skills;
-  }
-
-  // Helper: Generate time slots
   private generateTimeSlots(startTime: string, endTime: string, durationHours: number): any[] {
     const slots = [];
     const [startHour, startMin] = startTime.split(":").map(Number);
     const [endHour, endMin] = endTime.split(":").map(Number);
-
     let currentHour = startHour;
     let currentMin = startMin;
 
     while (currentHour < endHour || (currentHour === endHour && currentMin < endMin)) {
       const slotStart = `${String(currentHour).padStart(2, "0")}:${String(currentMin).padStart(2, "0")}`;
-      const endTimeObj = this.addHours(slotStart, durationHours);
-      const slotEnd = `${String(endTimeObj.hour).padStart(2, "0")}:${String(endTimeObj.minute).padStart(2, "0")}`;
+      const endObj = this.addHours(slotStart, durationHours);
+      const slotEnd = `${String(endObj.hour).padStart(2, "0")}:${String(endObj.minute).padStart(2, "0")}`;
 
-      if (endTimeObj.hour < endHour || (endTimeObj.hour === endHour && endTimeObj.minute <= endMin)) {
-        slots.push({
-          start: slotStart,
-          end: slotEnd,
-        });
+      if (endObj.hour < endHour || (endObj.hour === endHour && endObj.minute <= endMin)) {
+        slots.push({ start: slotStart, end: slotEnd });
       }
-
-      // Move to next slot (30-minute intervals)
       currentMin += 30;
-      if (currentMin >= 60) {
-        currentHour++;
-        currentMin = 0;
-      }
+      if (currentMin >= 60) { currentHour++; currentMin = 0; }
     }
-
     return slots;
   }
 
-  // Helper: Add hours to time string
   private addHours(timeString: string, hours: number): { hour: number; minute: number } {
     const [hour, minute] = timeString.split(":").map(Number);
     let newHour = hour + Math.floor(hours);
     let newMinute = minute + (hours % 1) * 60;
-
-    if (newMinute >= 60) {
-      newHour++;
-      newMinute -= 60;
-    }
-
+    if (newMinute >= 60) { newHour++; newMinute -= 60; }
     return { hour: newHour, minute: newMinute };
   }
 }

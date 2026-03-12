@@ -375,6 +375,7 @@ model Nursery {
   vendorEarnings VendorEarning[]
 
   @@map("nurseries")
+  NurseryInvitation NurseryInvitation[]
 }
 
 model NurseryWorkingHours {
@@ -543,6 +544,7 @@ model Gardener {
   gardenerEarnings  GardenerEarning[]
 
   @@map("gardeners")
+  NurseryInvitation NurseryInvitation[]
 }
 
 model GardenerSkill {
@@ -1220,4 +1222,22 @@ model CartPackageItem {
   customPackage     CustomPlantPackage? @relation(fields: [customPackageId], references: [id])
 
   @@map("cart_package_items")
+}
+model NurseryInvitation {
+  id         String           @id @default(uuid())
+  nurseryId  String
+  gardenerId String
+  status     InvitationStatus @default(PENDING)
+  message    String?
+  createdAt  DateTime         @default(now())
+  expiresAt  DateTime
+  nursery    Nursery          @relation(fields: [nurseryId], references: [id])
+  gardener   Gardener         @relation(fields: [gardenerId], references: [id])
+}
+
+enum InvitationStatus {
+  PENDING
+  ACCEPTED
+  DECLINED
+  EXPIRED
 }
