@@ -128,6 +128,13 @@ enum TaskStatus {
   CANCELLED
 }
 
+enum MaintenanceProposalStatus {
+  NONE
+  AWAITING_CUSTOMER
+  APPROVED
+  RESCHEDULE_REQUESTED
+}
+
 enum TaskPriority {
   LOW
   MEDIUM
@@ -657,7 +664,8 @@ model Order {
   vendorEarnings  VendorEarning[]
   reviews         Review[]
   disputes        Dispute[]
-  couponUsage     CouponUsage[]
+  couponUsage               CouponUsage[]
+  vendorApprovalSelections  Json?         @map("vendor_approval_selections")
 
   @@map("orders")
 }
@@ -770,7 +778,7 @@ model MaintenanceTask {
   orderItemId     String?      @map("order_item_id")
   bookingId       String?      @map("booking_id")
   nurseryId       String?      @map("nursery_id")
-  gardenerId      String       @map("gardener_id")
+  gardenerId      String?      @map("gardener_id")
   userId          String       @map("user_id")
   taskType        TaskType     @map("task_type")
   scheduledDate   DateTime     @map("scheduled_date") @db.Date
@@ -786,10 +794,18 @@ model MaintenanceTask {
   createdAt       DateTime     @default(now()) @map("created_at")
   updatedAt       DateTime     @updatedAt @map("updated_at")
 
+  proposalStatus           MaintenanceProposalStatus @default(NONE) @map("proposal_status")
+  vendorProposedDate       DateTime?                 @map("vendor_proposed_date") @db.Date
+  vendorProposedTime       String?                   @map("vendor_proposed_time")
+  customerCounterDate      DateTime?                 @map("customer_counter_date") @db.Date
+  customerCounterTime      String?                   @map("customer_counter_time")
+  maintenanceFeedbackRating   Int?                 @map("maintenance_feedback_rating")
+  maintenanceFeedbackComment  String?              @map("maintenance_feedback_comment") @db.Text
+
   orderItem       OrderItem?        @relation(fields: [orderItemId], references: [id])
   booking         ServiceBooking?   @relation(fields: [bookingId], references: [id])
   nursery         Nursery?          @relation(fields: [nurseryId], references: [id])
-  gardener        Gardener          @relation(fields: [gardenerId], references: [id])
+  gardener        Gardener?         @relation(fields: [gardenerId], references: [id])
   address         UserAddress       @relation(fields: [addressId], references: [id])
   images          TaskImage[]
   gardenerEarnings GardenerEarning[]

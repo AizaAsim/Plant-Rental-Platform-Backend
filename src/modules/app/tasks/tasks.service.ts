@@ -5,13 +5,51 @@ import {
   BadRequestException,
   ForbiddenException,
 } from "@nestjs/common";
-import { Prisma, TaskStatus, TaskType, TaskPriority, TaskImageType } from "@prisma/client";
+import {
+  Prisma,
+  TaskStatus,
+  TaskType,
+  TaskPriority,
+  TaskImageType,
+  UserRole,
+  NotificationType,
+} from "@prisma/client";
 import { PrismaService } from "src/prisma/prisma.service";
 import { Decimal } from "@prisma/client/runtime/library";
 
 @Injectable()
 export class TasksService {
   constructor(private prisma: PrismaService) {}
+
+  private scheduledDateFilter(
+    date_from?: string,
+    date_to?: string
+  ): Prisma.DateTimeFilter | undefined {
+    if (!date_from && !date_to) return undefined;
+    return {
+      ...(date_from ? { gte: new Date(date_from) } : {}),
+      ...(date_to ? { lte: new Date(date_to) } : {}),
+    };
+  }
+
+  private async notify(
+    userId: string,
+    title: string,
+    message: string,
+    type: NotificationType,
+    referenceId?: string
+  ) {
+    await this.prisma.notification.create({
+      data: {
+        userId,
+        title,
+        message,
+        type,
+        referenceType: "TASK",
+        referenceId: referenceId ?? null,
+      },
+    });
+  }
 
   private generateTaskNumber(): string {
     const timestamp = Date.now();
@@ -39,12 +77,12 @@ export class TasksService {
       priority,
     } = filterDto;
 
+    const dateFilter = this.scheduledDateFilter(date_from, date_to);
     const where: Prisma.MaintenanceTaskWhereInput = {
       gardenerId: gardener.id,
       ...(status && { status }),
       ...(task_type && { taskType: task_type }),
-      ...(date_from && { scheduledDate: { gte: new Date(date_from) } }),
-      ...(date_to && { scheduledDate: { lte: new Date(date_to) } }),
+      ...(dateFilter && { scheduledDate: dateFilter }),
       ...(priority && { priority }),
     };
 
@@ -110,7 +148,7 @@ export class TasksService {
   }
 
   // GET /api/v1/tasks/{task_id}
-  async getTaskById(userId: string, taskId: string, userRole: string) {
+  async getTaskById(userId: string, taskId: string, userRole: UserRole) {
     const task = await this.prisma.maintenanceTask.findUnique({
       where: { id: taskId },
       include: {
@@ -173,14 +211,14 @@ export class TasksService {
     }
 
     // Check access
-    if (userRole === "GARDENER") {
+    if (userRole === UserRole.GARDENER) {
       const gardener = await this.prisma.gardener.findUnique({
         where: { userId },
       });
       if (!gardener || gardener.id !== task.gardenerId) {
         throw new ForbiddenException("Access denied");
       }
-    } else if (userRole === "VENDOR") {
+    } else if (userRole === UserRole.VENDOR) {
       if (!task.nurseryId) {
         throw new ForbiddenException("Access denied");
       }
@@ -190,10 +228,12 @@ export class TasksService {
       if (!nursery || nursery.id !== task.nurseryId) {
         throw new ForbiddenException("Access denied");
       }
-    } else if (userRole === "USER") {
+    } else if (userRole === UserRole.USER) {
       if (task.userId !== userId) {
         throw new ForbiddenException("Access denied");
       }
+    } else {
+      throw new ForbiddenException("Access denied");
     }
 
     return task;
@@ -233,10 +273,26 @@ export class TasksService {
           },
         },
         address: true,
+        nursery: { select: { vendorId: true } },
       },
     });
 
-    // TODO: Notify nursery/user
+    await this.notify(
+      updated.userId,
+      "Maintenance task accepted",
+      `Your scheduled maintenance (task ${updated.taskNumber}) was accepted by the gardener.`,
+      NotificationType.TASK,
+      taskId
+    );
+    if (updated.nursery?.vendorId) {
+      await this.notify(
+        updated.nursery.vendorId,
+        "Task accepted",
+        `Task ${updated.taskNumber} was accepted by the assigned gardener.`,
+        NotificationType.TASK,
+        taskId
+      );
+    }
 
     return updated;
   }
@@ -271,9 +327,18 @@ export class TasksService {
         status: TaskStatus.REJECTED,
         gardenerNotes: reason,
       },
+      include: { nursery: { select: { vendorId: true } } },
     });
 
-    // TODO: Notify nursery to reassign
+    if (updated.nursery?.vendorId) {
+      await this.notify(
+        updated.nursery.vendorId,
+        "Task rejected — reassign needed",
+        `Gardener rejected task ${updated.taskNumber}. Reason: ${reason || "Not specified"}`,
+        NotificationType.TASK,
+        taskId
+      );
+    }
 
     return updated;
   }
@@ -292,14 +357,12 @@ export class TasksService {
       where: {
         id: taskId,
         gardenerId: gardener.id,
-        status: {
-          in: [TaskStatus.ACCEPTED, TaskStatus.ASSIGNED],
-        },
+        status: TaskStatus.ACCEPTED,
       },
     });
 
     if (!task) {
-      throw new NotFoundException("Task not found or cannot be started");
+      throw new NotFoundException("Task not found or cannot be started (accept it first)");
     }
 
     const updated = await this.prisma.maintenanceTask.update({
@@ -334,6 +397,7 @@ export class TasksService {
       include: {
         orderItem: true,
         booking: true,
+        nursery: { select: { vendorId: true } },
       },
     });
 
@@ -341,18 +405,23 @@ export class TasksService {
       throw new NotFoundException("Task not found or cannot be completed");
     }
 
+    const completionNotes =
+      [completion_notes, issues_found ? `Issues: ${issues_found}` : ""]
+        .filter(Boolean)
+        .join("\n")
+        .trim() || null;
+
     const updated = await this.prisma.maintenanceTask.update({
       where: { id: taskId },
       data: {
         status: TaskStatus.COMPLETED,
         completedAt: new Date(),
-        completionNotes: completion_notes,
-        gardenerNotes: issues_found ? `${task.gardenerNotes || ""}\nIssues found: ${issues_found}`.trim() : task.gardenerNotes,
+        completionNotes,
       },
     });
 
     // Create gardener earnings if from scheduled maintenance (nursery task)
-    if (task.taskType === "SCHEDULED_MAINTENANCE" && task.orderItemId) {
+    if (task.taskType === TaskType.SCHEDULED_MAINTENANCE && task.orderItemId) {
       // Calculate earnings (would need to check nursery settings for rate)
       const grossAmount = new Decimal(500); // Default rate, should come from nursery settings
       const commissionRate = new Decimal(0.1); // 10% commission
@@ -374,23 +443,36 @@ export class TasksService {
     }
 
     // If issues found, flag for plant doctor
-    if (issues_found) {
-      // Create plant diagnosis request
-      if (task.orderItemId && task.orderItem?.plantId) {
-        await this.prisma.plantDiagnosis.create({
-          data: {
-            userId: task.userId,
-            plantId: task.orderItem.plantId,
-            imageUrl: "", // Would be from task images
-            diagnosisResult: {},
-            diseaseDetected: issues_found,
-            severity: "MODERATE", // Default, would be determined by AI
-          },
-        });
-      }
+    const plantId = task.orderItem?.plantId;
+    if (issues_found && plantId) {
+      await this.prisma.plantDiagnosis.create({
+        data: {
+          userId: task.userId,
+          plantId,
+          imageUrl: "pending",
+          diagnosisResult: {},
+          diseaseDetected: issues_found,
+          severity: "MODERATE",
+        },
+      });
     }
 
-    // TODO: Notify user/nursery
+    await this.notify(
+      task.userId,
+      "Maintenance completed",
+      `Task ${task.taskNumber} was completed.${issues_found ? " Issues were reported and forwarded to plant care." : ""}`,
+      NotificationType.TASK,
+      taskId
+    );
+    if (task.nursery?.vendorId) {
+      await this.notify(
+        task.nursery.vendorId,
+        "Maintenance completed",
+        `Task ${task.taskNumber} was marked completed by the gardener.`,
+        NotificationType.TASK,
+        taskId
+      );
+    }
 
     return updated;
   }
@@ -417,6 +499,9 @@ export class TasksService {
     }
 
     const { images } = imagesDto;
+    if (!Array.isArray(images) || images.length === 0) {
+      throw new BadRequestException("images array is required");
+    }
 
     const createdImages = await Promise.all(
       images.map((img: any) =>
@@ -424,7 +509,7 @@ export class TasksService {
           data: {
             taskId: taskId,
             imageUrl: img.image_url,
-            imageType: img.image_type,
+            imageType: img.image_type as TaskImageType,
             caption: img.caption,
             uploadedBy: gardenerId,
           },
@@ -433,7 +518,9 @@ export class TasksService {
     );
 
     // Auto-send ISSUE images to plant doctor
-    const issueImages = images.filter((img: any) => img.image_type === "ISSUE");
+    const issueImages = images.filter(
+      (img: any) => img.image_type === TaskImageType.ISSUE || img.image_type === "ISSUE"
+    );
     if (issueImages.length > 0 && task.orderItemId) {
       const taskWithPlant = await this.prisma.maintenanceTask.findUnique({
         where: { id: taskId },
@@ -465,7 +552,7 @@ export class TasksService {
   }
 
   // GET /api/v1/tasks/{task_id}/images
-  async getTaskImages(userId: string, taskId: string, userRole: string) {
+  async getTaskImages(userId: string, taskId: string, userRole: UserRole) {
     const task = await this.prisma.maintenanceTask.findUnique({
       where: { id: taskId },
     });
@@ -475,14 +562,14 @@ export class TasksService {
     }
 
     // Check access (same logic as getTaskById)
-    if (userRole === "GARDENER") {
+    if (userRole === UserRole.GARDENER) {
       const gardener = await this.prisma.gardener.findUnique({
         where: { userId },
       });
       if (!gardener || gardener.id !== task.gardenerId) {
         throw new ForbiddenException("Access denied");
       }
-    } else if (userRole === "VENDOR") {
+    } else if (userRole === UserRole.VENDOR) {
       if (!task.nurseryId) {
         throw new ForbiddenException("Access denied");
       }
@@ -492,10 +579,12 @@ export class TasksService {
       if (!nursery || nursery.id !== task.nurseryId) {
         throw new ForbiddenException("Access denied");
       }
-    } else if (userRole === "USER") {
+    } else if (userRole === UserRole.USER) {
       if (task.userId !== userId) {
         throw new ForbiddenException("Access denied");
       }
+    } else {
+      throw new ForbiddenException("Access denied");
     }
 
     const images = await this.prisma.taskImage.findMany({
@@ -535,12 +624,12 @@ export class TasksService {
       date_to,
     } = filterDto;
 
+    const dateFilter = this.scheduledDateFilter(date_from, date_to);
     const where: Prisma.MaintenanceTaskWhereInput = {
       nurseryId: nursery.id,
       ...(status && { status }),
       ...(gardener_id && { gardenerId: gardener_id }),
-      ...(date_from && { scheduledDate: { gte: new Date(date_from) } }),
-      ...(date_to && { scheduledDate: { lte: new Date(date_to) } }),
+      ...(dateFilter && { scheduledDate: dateFilter }),
     };
 
     const skip = (page - 1) * limit;
@@ -696,7 +785,13 @@ export class TasksService {
       },
     });
 
-    // TODO: Notify gardener
+    await this.notify(
+      gardener.userId,
+      "New maintenance task",
+      `You have a new assigned task ${task.taskNumber} scheduled for ${scheduled_date}.`,
+      NotificationType.TASK,
+      task.id
+    );
 
     return task;
   }
@@ -737,8 +832,6 @@ export class TasksService {
       throw new BadRequestException("Gardener does not belong to this nursery");
     }
 
-    const oldGardenerId = task.gardenerId;
-
     const updated = await this.prisma.maintenanceTask.update({
       where: { id: taskId },
       data: {
@@ -759,7 +852,32 @@ export class TasksService {
       },
     });
 
-    // TODO: Notify both gardeners
+    const prevGardener = await this.prisma.gardener.findUnique({
+      where: { id: task.gardenerId },
+      select: { userId: true },
+    });
+    const nextGardener = await this.prisma.gardener.findUnique({
+      where: { id: gardener_id },
+      select: { userId: true },
+    });
+    if (prevGardener) {
+      await this.notify(
+        prevGardener.userId,
+        "Task reassigned",
+        `Task ${updated.taskNumber} was reassigned to another gardener.`,
+        NotificationType.TASK,
+        taskId
+      );
+    }
+    if (nextGardener) {
+      await this.notify(
+        nextGardener.userId,
+        "New task assigned",
+        `You have been assigned task ${updated.taskNumber}.`,
+        NotificationType.TASK,
+        taskId
+      );
+    }
 
     return updated;
   }
@@ -800,7 +918,19 @@ export class TasksService {
       data: updateData,
     });
 
-    // TODO: Notify gardener
+    const g = await this.prisma.gardener.findUnique({
+      where: { id: task.gardenerId },
+      select: { userId: true },
+    });
+    if (g) {
+      await this.notify(
+        g.userId,
+        "Task rescheduled",
+        `Task ${task.taskNumber} schedule was updated by the nursery.`,
+        NotificationType.TASK,
+        taskId
+      );
+    }
 
     return updated;
   }
@@ -838,9 +968,25 @@ export class TasksService {
         status: TaskStatus.CANCELLED,
         gardenerNotes: reason,
       },
+      include: { gardener: { select: { userId: true } } },
     });
 
-    // TODO: Notify gardener and user
+    await this.notify(
+      task.userId,
+      "Maintenance task cancelled",
+      `Task ${task.taskNumber} was cancelled by the nursery.${reason ? ` Reason: ${reason}` : ""}`,
+      NotificationType.TASK,
+      taskId
+    );
+    if (updated.gardener) {
+      await this.notify(
+        updated.gardener.userId,
+        "Task cancelled",
+        `Task ${task.taskNumber} was cancelled by the nursery.`,
+        NotificationType.TASK,
+        taskId
+      );
+    }
 
     return updated;
   }
@@ -857,11 +1003,11 @@ export class TasksService {
       date_to,
     } = filterDto;
 
+    const dateFilter = this.scheduledDateFilter(date_from, date_to);
     const where: Prisma.MaintenanceTaskWhereInput = {
       userId,
       ...(status && { status }),
-      ...(date_from && { scheduledDate: { gte: new Date(date_from) } }),
-      ...(date_to && { scheduledDate: { lte: new Date(date_to) } }),
+      ...(dateFilter && { scheduledDate: dateFilter }),
     };
 
     const skip = (page - 1) * limit;

@@ -30,6 +30,6 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
     // Validate user still exists and is active
     const user = await this.authService.validateUser(payload.sub);
 
-    return { id: payload.sub, email: payload.email };
+    return { id: payload.sub, email: user.email, role: user.role };
   }
 }
