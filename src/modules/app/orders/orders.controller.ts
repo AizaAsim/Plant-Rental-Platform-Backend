@@ -65,6 +65,16 @@ export class OrdersController {
     return this.ordersService.getUserOrders(req.user.id, filterDto);
   }
 
+  @Get("customer/active-rentals")
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.USER)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: "List customer's active rentals (order lines)" })
+  @ApiResponse({ status: 200, description: "Active rentals retrieved" })
+  async getCustomerActiveRentals(@Request() req) {
+    return this.ordersService.getCustomerActiveRentals(req.user.id);
+  }
+
   @Get(":order_id")
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(UserRole.USER)
@@ -177,6 +187,20 @@ export class OrdersController {
     return this.ordersService.getVendorOrders(req.user.id, filterDto);
   }
 
+  @Get("vendor/orders/stats")
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.VENDOR)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: "Get order statistics" })
+  @ApiQuery({ name: "period", required: false, enum: ["day", "week", "month", "year"] })
+  @ApiResponse({
+    status: 200,
+    description: "Statistics retrieved successfully",
+  })
+  async getVendorOrderStats(@Request() req, @Query("period") period?: string) {
+    return this.ordersService.getVendorOrderStats(req.user.id, period || "month");
+  }
+
   @Get("vendor/orders/:order_id")
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(UserRole.VENDOR)
@@ -189,6 +213,55 @@ export class OrdersController {
   })
   async getVendorOrder(@Request() req, @Param("order_id") orderId: string) {
     return this.ordersService.getVendorOrder(req.user.id, orderId);
+  }
+
+  @Get("vendor/orders/:order_id/payment-status")
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.VENDOR)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: "Payment status for vendor (before process order)" })
+  @ApiParam({ name: "order_id" })
+  async getVendorOrderPaymentStatus(
+    @Request() req,
+    @Param("order_id") orderId: string
+  ) {
+    return this.ordersService.getVendorOrderPaymentStatus(req.user.id, orderId);
+  }
+
+  @Put("vendor/orders/:order_id/approve")
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.VENDOR)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: "Approve order with plant_selections[]" })
+  @ApiParam({ name: "order_id" })
+  async vendorApproveOrder(
+    @Request() req,
+    @Param("order_id") orderId: string,
+    @Body() body: any
+  ) {
+    return this.ordersService.vendorApproveOrder(req.user.id, orderId, body);
+  }
+
+  @Post("vendor/orders/:order_id/process")
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.VENDOR)
+  @ApiBearerAuth()
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: "Send order to processing (after payment confirmed)" })
+  @ApiParam({ name: "order_id" })
+  async vendorProcessOrder(@Request() req, @Param("order_id") orderId: string) {
+    return this.ordersService.vendorProcessOrder(req.user.id, orderId);
+  }
+
+  @Post("vendor/orders/:order_id/complete-delivery")
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.VENDOR)
+  @ApiBearerAuth()
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: "Complete delivery — activate rental clock" })
+  @ApiParam({ name: "order_id" })
+  async vendorCompleteDelivery(@Request() req, @Param("order_id") orderId: string) {
+    return this.ordersService.vendorCompleteDelivery(req.user.id, orderId);
   }
 
   @Put("vendor/orders/:order_id/status")
@@ -245,20 +318,6 @@ export class OrdersController {
     @Body() assignDto: any
   ) {
     return this.ordersService.assignGardener(req.user.id, orderId, assignDto);
-  }
-
-  @Get("vendor/orders/stats")
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(UserRole.VENDOR)
-  @ApiBearerAuth()
-  @ApiOperation({ summary: "Get order statistics" })
-  @ApiQuery({ name: "period", required: false, enum: ["day", "week", "month", "year"] })
-  @ApiResponse({
-    status: 200,
-    description: "Statistics retrieved successfully",
-  })
-  async getVendorOrderStats(@Request() req, @Query("period") period?: string) {
-    return this.ordersService.getVendorOrderStats(req.user.id, period || "month");
   }
 
   @Get("vendor/rentals/active")

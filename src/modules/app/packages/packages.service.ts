@@ -76,6 +76,50 @@ export class PackagesService {
     return packages;
   }
 
+  /** GET /api/v1/packages/nursery/:nursery_id — fixed packages whose plants are all from this nursery */
+  async getPackagesByNursery(nurseryId: string) {
+    const nursery = await this.prisma.nursery.findFirst({
+      where: { id: nurseryId, isActive: true },
+    });
+    if (!nursery) {
+      throw new NotFoundException("Nursery not found");
+    }
+
+    const packages = await this.prisma.plantPackage.findMany({
+      where: {
+        isActive: true,
+        isDefault: true,
+        items: {
+          some: {},
+          every: { plant: { nurseryId } },
+        },
+      },
+      include: {
+        items: {
+          include: {
+            plant: {
+              include: {
+                images: {
+                  where: { isPrimary: true },
+                  take: 1,
+                },
+                nursery: {
+                  select: {
+                    id: true,
+                    name: true,
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+      orderBy: { createdAt: "asc" },
+    });
+
+    return packages;
+  }
+
   // GET /api/v1/packages/:package_id - Get package details
   async getPackageById(packageId: string) {
     const packageData = await this.prisma.plantPackage.findUnique({

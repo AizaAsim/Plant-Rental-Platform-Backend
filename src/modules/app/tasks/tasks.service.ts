@@ -13,6 +13,7 @@ import {
   TaskImageType,
   UserRole,
   NotificationType,
+  MaintenanceProposalStatus,
 } from "@prisma/client";
 import { PrismaService } from "src/prisma/prisma.service";
 import { Decimal } from "@prisma/client/runtime/library";
@@ -215,7 +216,7 @@ export class TasksService {
       const gardener = await this.prisma.gardener.findUnique({
         where: { userId },
       });
-      if (!gardener || gardener.id !== task.gardenerId) {
+      if (!gardener || !task.gardenerId || gardener.id !== task.gardenerId) {
         throw new ForbiddenException("Access denied");
       }
     } else if (userRole === UserRole.VENDOR) {
@@ -566,7 +567,7 @@ export class TasksService {
       const gardener = await this.prisma.gardener.findUnique({
         where: { userId },
       });
-      if (!gardener || gardener.id !== task.gardenerId) {
+      if (!gardener || !task.gardenerId || gardener.id !== task.gardenerId) {
         throw new ForbiddenException("Access denied");
       }
     } else if (userRole === UserRole.VENDOR) {
@@ -852,10 +853,12 @@ export class TasksService {
       },
     });
 
-    const prevGardener = await this.prisma.gardener.findUnique({
-      where: { id: task.gardenerId },
-      select: { userId: true },
-    });
+    const prevGardener = task.gardenerId
+      ? await this.prisma.gardener.findUnique({
+          where: { id: task.gardenerId },
+          select: { userId: true },
+        })
+      : null;
     const nextGardener = await this.prisma.gardener.findUnique({
       where: { id: gardener_id },
       select: { userId: true },
@@ -918,10 +921,12 @@ export class TasksService {
       data: updateData,
     });
 
-    const g = await this.prisma.gardener.findUnique({
-      where: { id: task.gardenerId },
-      select: { userId: true },
-    });
+    const g = task.gardenerId
+      ? await this.prisma.gardener.findUnique({
+          where: { id: task.gardenerId },
+          select: { userId: true },
+        })
+      : null;
     if (g) {
       await this.notify(
         g.userId,
@@ -1068,5 +1073,263 @@ export class TasksService {
         totalPages: Math.ceil(total / limit),
       },
     };
+  }
+
+  private parseVisitType(raw: unknown): TaskType {
+    if (
+      typeof raw === "string" &&
+      (Object.values(TaskType) as string[]).includes(raw)
+    ) {
+      return raw as TaskType;
+    }
+    return TaskType.SCHEDULED_MAINTENANCE;
+  }
+
+  /**
+   * POST /api/v1/tasks/vendor/tasks/:task_id/propose-maintenance
+   * `task_id` may be a maintenance task id or an order item id (rental line).
+   */
+  async proposeMaintenanceVisit(vendorUserId: string, idFromRoute: string, body: any) {
+    const { proposed_date, proposed_time, visit_type, description } = body ?? {};
+    if (!proposed_date) {
+      throw new BadRequestException("proposed_date is required");
+    }
+
+    const nursery = await this.prisma.nursery.findUnique({
+      where: { vendorId: vendorUserId },
+    });
+    if (!nursery) {
+      throw new NotFoundException("Nursery not found");
+    }
+
+    const proposedDate = new Date(proposed_date);
+    if (Number.isNaN(proposedDate.getTime())) {
+      throw new BadRequestException("Invalid proposed_date");
+    }
+    const taskType = this.parseVisitType(visit_type);
+
+    const existing = await this.prisma.maintenanceTask.findFirst({
+      where: { id: idFromRoute, nurseryId: nursery.id },
+      include: {
+        orderItem: { include: { order: true } },
+      },
+    });
+
+    if (existing) {
+      if (
+        existing.status === TaskStatus.COMPLETED ||
+        existing.status === TaskStatus.CANCELLED
+      ) {
+        throw new BadRequestException("Cannot propose on a completed or cancelled task");
+      }
+      if (existing.proposalStatus === MaintenanceProposalStatus.AWAITING_CUSTOMER) {
+        throw new BadRequestException(
+          "A proposal is already waiting for the customer. Wait for their response."
+        );
+      }
+      if (existing.proposalStatus === MaintenanceProposalStatus.APPROVED) {
+        throw new BadRequestException(
+          "This visit was already confirmed. Reschedule or create a new task if needed."
+        );
+      }
+
+      const updated = await this.prisma.maintenanceTask.update({
+        where: { id: existing.id },
+        data: {
+          vendorProposedDate: proposedDate,
+          vendorProposedTime: proposed_time ?? null,
+          proposalStatus: MaintenanceProposalStatus.AWAITING_CUSTOMER,
+          taskType,
+          scheduledDate: proposedDate,
+          scheduledTime: proposed_time ?? existing.scheduledTime,
+          ...(description !== undefined ? { description } : {}),
+        },
+        include: {
+          orderItem: { include: { plant: true } },
+          address: true,
+        },
+      });
+
+      await this.notify(
+        updated.userId,
+        "Maintenance visit proposed",
+        `The nursery proposed a maintenance visit on ${proposed_date}${proposed_time ? ` at ${proposed_time}` : ""}. Please approve or suggest another time.`,
+        NotificationType.TASK,
+        updated.id
+      );
+
+      return updated;
+    }
+
+    const orderItem = await this.prisma.orderItem.findFirst({
+      where: { id: idFromRoute },
+      include: { order: true, plant: true },
+    });
+    if (!orderItem || orderItem.order.nurseryId !== nursery.id) {
+      throw new NotFoundException("Task or rental line not found for this nursery");
+    }
+    if (orderItem.orderType !== "RENT") {
+      throw new BadRequestException("Maintenance proposals apply to rental items only");
+    }
+    if (!["ACTIVE", "EXTENDED"].includes(orderItem.rentalStatus || "")) {
+      throw new BadRequestException("Rental must be active to schedule maintenance");
+    }
+
+    const address = await this.prisma.userAddress.findFirst({
+      where: { userId: orderItem.order.userId, isDefault: true },
+    });
+    if (!address) {
+      throw new NotFoundException("User address not found");
+    }
+
+    const created = await this.prisma.maintenanceTask.create({
+      data: {
+        taskNumber: this.generateTaskNumber(),
+        orderItemId: orderItem.id,
+        nurseryId: nursery.id,
+        gardenerId: null,
+        userId: orderItem.order.userId,
+        addressId: address.id,
+        taskType,
+        scheduledDate: proposedDate,
+        scheduledTime: proposed_time ?? null,
+        status: TaskStatus.PENDING,
+        priority: TaskPriority.MEDIUM,
+        description: description ?? null,
+        proposalStatus: MaintenanceProposalStatus.AWAITING_CUSTOMER,
+        vendorProposedDate: proposedDate,
+        vendorProposedTime: proposed_time ?? null,
+      },
+      include: {
+        orderItem: { include: { plant: true } },
+        address: true,
+      },
+    });
+
+    await this.notify(
+      created.userId,
+      "Maintenance visit proposed",
+      `The nursery proposed a maintenance visit on ${proposed_date}${proposed_time ? ` at ${proposed_time}` : ""}. Please approve or suggest another time.`,
+      NotificationType.TASK,
+      created.id
+    );
+
+    return created;
+  }
+
+  async customerMaintenanceResponse(userId: string, taskId: string, body: any) {
+    const { action, proposed_date, proposed_time } = body ?? {};
+    if (action !== "approve" && action !== "reschedule") {
+      throw new BadRequestException('action must be "approve" or "reschedule"');
+    }
+
+    const task = await this.prisma.maintenanceTask.findFirst({
+      where: { id: taskId, userId },
+      include: { nursery: { select: { vendorId: true } } },
+    });
+    if (!task) {
+      throw new NotFoundException("Task not found");
+    }
+    if (task.proposalStatus !== MaintenanceProposalStatus.AWAITING_CUSTOMER) {
+      throw new BadRequestException("There is no pending maintenance proposal for this task");
+    }
+
+    if (action === "approve") {
+      if (!task.vendorProposedDate) {
+        throw new BadRequestException("Invalid proposal state");
+      }
+      const updated = await this.prisma.maintenanceTask.update({
+        where: { id: taskId },
+        data: {
+          proposalStatus: MaintenanceProposalStatus.APPROVED,
+          scheduledDate: task.vendorProposedDate,
+          scheduledTime: task.vendorProposedTime ?? task.scheduledTime,
+          status: task.gardenerId ? TaskStatus.ASSIGNED : TaskStatus.PENDING,
+        },
+        include: {
+          orderItem: { include: { plant: true } },
+          gardener: { include: { user: { select: { id: true, fullName: true } } } },
+          nursery: { select: { vendorId: true } },
+        },
+      });
+
+      if (task.nursery?.vendorId) {
+        await this.notify(
+          task.nursery.vendorId,
+          "Maintenance visit confirmed",
+          `The customer approved the proposed visit for task ${task.taskNumber}.`,
+          NotificationType.TASK,
+          taskId
+        );
+      }
+      if (updated.gardener?.userId) {
+        await this.notify(
+          updated.gardener.userId,
+          "Visit confirmed",
+          `The customer confirmed the schedule for task ${task.taskNumber}.`,
+          NotificationType.TASK,
+          taskId
+        );
+      }
+      return updated;
+    }
+
+    if (!proposed_date) {
+      throw new BadRequestException("proposed_date is required when action is reschedule");
+    }
+    const counterDate = new Date(proposed_date);
+    if (Number.isNaN(counterDate.getTime())) {
+      throw new BadRequestException("Invalid proposed_date");
+    }
+
+    const updated = await this.prisma.maintenanceTask.update({
+      where: { id: taskId },
+      data: {
+        proposalStatus: MaintenanceProposalStatus.RESCHEDULE_REQUESTED,
+        customerCounterDate: counterDate,
+        customerCounterTime: proposed_time ?? null,
+      },
+      include: { nursery: { select: { vendorId: true } } },
+    });
+
+    if (updated.nursery?.vendorId) {
+      await this.notify(
+        updated.nursery.vendorId,
+        "Customer requested a new time",
+        `The customer suggested another time for task ${task.taskNumber}.`,
+        NotificationType.TASK,
+        taskId
+      );
+    }
+
+    return updated;
+  }
+
+  async submitMaintenanceFeedback(userId: string, taskId: string, body: any) {
+    const { rating, comment } = body ?? {};
+    if (rating === undefined && comment === undefined) {
+      throw new BadRequestException("Provide rating and/or comment");
+    }
+    if (rating !== undefined) {
+      const n = Number(rating);
+      if (!Number.isInteger(n) || n < 1 || n > 5) {
+        throw new BadRequestException("rating must be an integer from 1 to 5");
+      }
+    }
+
+    const task = await this.prisma.maintenanceTask.findFirst({
+      where: { id: taskId, userId, status: TaskStatus.COMPLETED },
+    });
+    if (!task) {
+      throw new NotFoundException("Completed maintenance task not found");
+    }
+
+    return this.prisma.maintenanceTask.update({
+      where: { id: taskId },
+      data: {
+        ...(rating !== undefined ? { maintenanceFeedbackRating: Number(rating) } : {}),
+        ...(comment !== undefined ? { maintenanceFeedbackComment: comment } : {}),
+      },
+    });
   }
 }

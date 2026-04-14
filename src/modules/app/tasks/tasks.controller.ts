@@ -31,6 +31,52 @@ import { UserRole } from "@prisma/client";
 export class TasksController {
   constructor(private readonly tasksService: TasksService) {}
 
+  @Post("vendor/tasks/:task_id/propose-maintenance")
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.VENDOR)
+  @ApiBearerAuth()
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: "Propose maintenance visit (notifies customer)" })
+  @ApiParam({ name: "task_id", description: "Maintenance task id or order item id" })
+  @ApiResponse({ status: 200, description: "Proposal sent" })
+  async proposeMaintenanceVisit(
+    @Request() req,
+    @Param("task_id") taskId: string,
+    @Body() body: any
+  ) {
+    return this.tasksService.proposeMaintenanceVisit(req.user.id, taskId, body);
+  }
+
+  @Post(":task_id/customer-response")
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.USER)
+  @ApiBearerAuth()
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: "Approve or reschedule a proposed maintenance visit" })
+  @ApiParam({ name: "task_id" })
+  async customerMaintenanceResponse(
+    @Request() req,
+    @Param("task_id") taskId: string,
+    @Body() body: any
+  ) {
+    return this.tasksService.customerMaintenanceResponse(req.user.id, taskId, body);
+  }
+
+  @Post(":task_id/maintenance-feedback")
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.USER)
+  @ApiBearerAuth()
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: "Optional rating/comment after maintenance visit" })
+  @ApiParam({ name: "task_id" })
+  async submitMaintenanceFeedback(
+    @Request() req,
+    @Param("task_id") taskId: string,
+    @Body() body: any
+  ) {
+    return this.tasksService.submitMaintenanceFeedback(req.user.id, taskId, body);
+  }
+
   @Get()
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(UserRole.GARDENER)

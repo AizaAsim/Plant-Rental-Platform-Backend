@@ -5,7 +5,15 @@ import {
   BadRequestException,
   ForbiddenException,
 } from "@nestjs/common";
-import { Prisma, OrderStatus, OrderType, PaymentStatus, RentalStatus } from "@prisma/client";
+import {
+  Prisma,
+  OrderStatus,
+  OrderType,
+  PaymentStatus,
+  RentalStatus,
+  TransactionStatus,
+  NotificationType,
+} from "@prisma/client";
 import { PrismaService } from "src/prisma/prisma.service";
 import { Decimal } from "@prisma/client/runtime/library";
 import { CartService } from "../cart/cart.service";
@@ -1306,5 +1314,216 @@ export class OrdersService {
         totalPages: Math.ceil(total / limit),
       },
     };
+  }
+
+  /** GET /api/v1/orders/customer/active-rentals */
+  async getCustomerActiveRentals(userId: string) {
+    const items = await this.prisma.orderItem.findMany({
+      where: {
+        order: { userId },
+        orderType: OrderType.RENT,
+        rentalStatus: { in: [RentalStatus.ACTIVE, RentalStatus.EXTENDED] },
+      },
+      include: {
+        plant: {
+          include: {
+            images: { where: { isPrimary: true }, take: 1 },
+            nursery: { select: { id: true, name: true, slug: true } },
+          },
+        },
+        order: {
+          select: {
+            id: true,
+            orderNumber: true,
+            status: true,
+            paymentStatus: true,
+            deliveredAt: true,
+            createdAt: true,
+          },
+        },
+      },
+      orderBy: { rentEndDate: "asc" },
+    });
+    return { items };
+  }
+
+  private async requireVendorOrder(vendorId: string, orderId: string) {
+    const nursery = await this.prisma.nursery.findUnique({
+      where: { vendorId },
+    });
+    if (!nursery) throw new NotFoundException("Nursery not found");
+    const order = await this.prisma.order.findFirst({
+      where: { id: orderId, nurseryId: nursery.id },
+      include: { items: true },
+    });
+    if (!order) throw new NotFoundException("Order not found");
+    return { nursery, order };
+  }
+
+  /** GET /api/v1/orders/vendor/orders/:order_id/payment-status */
+  async getVendorOrderPaymentStatus(vendorId: string, orderId: string) {
+    const { order } = await this.requireVendorOrder(vendorId, orderId);
+    const payments = await this.prisma.payment.findMany({
+      where: { orderId: order.id },
+      orderBy: { createdAt: "desc" },
+    });
+    const hasSuccessfulCapture = payments.some((p) => p.status === TransactionStatus.SUCCESS);
+    return {
+      order_id: order.id,
+      order_number: order.orderNumber,
+      order_payment_status: order.paymentStatus,
+      payments,
+      has_successful_capture: hasSuccessfulCapture,
+      can_send_to_process:
+        order.status === OrderStatus.CONFIRMED && order.paymentStatus === PaymentStatus.PAID,
+    };
+  }
+
+  /** PUT /api/v1/orders/vendor/orders/:order_id/approve */
+  async vendorApproveOrder(
+    vendorId: string,
+    orderId: string,
+    body: { plant_selections: { order_item_id: string; plant_id: string }[] }
+  ) {
+    const { order } = await this.requireVendorOrder(vendorId, orderId);
+    if (order.status !== OrderStatus.PENDING) {
+      throw new BadRequestException("Only pending orders can be approved");
+    }
+    const selections = body.plant_selections;
+    if (!Array.isArray(selections) || selections.length === 0) {
+      throw new BadRequestException("plant_selections[] is required");
+    }
+    const items = order.items;
+    const byId = new Map(items.map((i) => [i.id, i]));
+    for (const sel of selections) {
+      const line = byId.get(sel.order_item_id);
+      if (!line) {
+        throw new BadRequestException(`Invalid order_item_id: ${sel.order_item_id}`);
+      }
+      if (line.plantId !== sel.plant_id) {
+        throw new BadRequestException(
+          `plant_id must match catalog plant for line ${sel.order_item_id}`
+        );
+      }
+    }
+    if (selections.length !== items.length) {
+      throw new BadRequestException("plant_selections must include every order line");
+    }
+
+    const updated = await this.prisma.order.update({
+      where: { id: orderId },
+      data: {
+        status: OrderStatus.CONFIRMED,
+        vendorApprovalSelections: selections as unknown as Prisma.InputJsonValue,
+      },
+      include: {
+        items: { include: { plant: { include: { images: { where: { isPrimary: true }, take: 1 } } } } },
+        user: { select: { id: true, fullName: true, email: true } },
+      },
+    });
+
+    await this.prisma.notification.create({
+      data: {
+        userId: order.userId,
+        title: "Order approved",
+        message: `Your order ${order.orderNumber} was approved by the nursery.`,
+        type: NotificationType.ORDER,
+        referenceType: "ORDER",
+        referenceId: order.id,
+      },
+    });
+
+    return updated;
+  }
+
+  /** POST /api/v1/orders/vendor/orders/:order_id/process */
+  async vendorProcessOrder(vendorId: string, orderId: string) {
+    const { order } = await this.requireVendorOrder(vendorId, orderId);
+    if (order.status !== OrderStatus.CONFIRMED) {
+      throw new BadRequestException("Order must be confirmed before processing");
+    }
+    if (order.paymentStatus !== PaymentStatus.PAID) {
+      throw new BadRequestException("Payment must be received (PAID) before processing");
+    }
+    const updated = await this.prisma.order.update({
+      where: { id: orderId },
+      data: { status: OrderStatus.PROCESSING },
+      include: { items: true, user: { select: { id: true, fullName: true } } },
+    });
+    await this.prisma.notification.create({
+      data: {
+        userId: order.userId,
+        title: "Order is being prepared",
+        message: `Your order ${order.orderNumber} is now being processed for delivery.`,
+        type: NotificationType.ORDER,
+        referenceType: "ORDER",
+        referenceId: order.id,
+      },
+    });
+    return updated;
+  }
+
+  /** POST /api/v1/orders/vendor/orders/:order_id/complete-delivery */
+  async vendorCompleteDelivery(vendorId: string, orderId: string) {
+    const { order } = await this.requireVendorOrder(vendorId, orderId);
+    if (
+      order.status !== OrderStatus.PROCESSING &&
+      order.status !== OrderStatus.OUT_FOR_DELIVERY
+    ) {
+      throw new BadRequestException(
+        "Order must be in PROCESSING or OUT_FOR_DELIVERY to complete delivery"
+      );
+    }
+    const now = new Date();
+
+    await this.prisma.$transaction(async (tx) => {
+      for (const item of order.items) {
+        if (item.orderType !== OrderType.RENT) continue;
+        let days = 30;
+        if (item.rentStartDate && item.rentEndDate) {
+          const ms = item.rentEndDate.getTime() - item.rentStartDate.getTime();
+          days = Math.max(1, Math.ceil(ms / 86400000));
+        }
+        const start = new Date(now);
+        const end = new Date(now);
+        end.setUTCDate(end.getUTCDate() + days);
+        await tx.orderItem.update({
+          where: { id: item.id },
+          data: {
+            rentalStatus: RentalStatus.ACTIVE,
+            rentStartDate: start,
+            rentEndDate: end,
+          },
+        });
+      }
+      await tx.order.update({
+        where: { id: orderId },
+        data: {
+          status: OrderStatus.DELIVERED,
+          deliveredAt: now,
+        },
+      });
+    });
+
+    const full = await this.prisma.order.findUnique({
+      where: { id: orderId },
+      include: {
+        items: { include: { plant: true } },
+        user: { select: { id: true, fullName: true, email: true } },
+      },
+    });
+
+    await this.prisma.notification.create({
+      data: {
+        userId: order.userId,
+        title: "Delivery completed",
+        message: `Your order ${order.orderNumber} has been delivered. Your rental period is now active.`,
+        type: NotificationType.RENTAL,
+        referenceType: "ORDER",
+        referenceId: order.id,
+      },
+    });
+
+    return full;
   }
 }

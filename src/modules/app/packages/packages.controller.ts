@@ -40,6 +40,15 @@ export class PackagesController {
     return this.packagesService.getAllPackages();
   }
 
+  @Get("nursery/:nursery_id")
+  @ApiOperation({ summary: "List fixed packages for a nursery (all plants in package from that nursery)" })
+  @ApiParam({ name: "nursery_id" })
+  @ApiResponse({ status: 200, description: "Packages retrieved successfully" })
+  @ApiResponse({ status: 404, description: "Nursery not found" })
+  async getPackagesByNursery(@Param("nursery_id") nurseryId: string) {
+    return this.packagesService.getPackagesByNursery(nurseryId);
+  }
+
   @Get(":package_id")
   @ApiOperation({ summary: "Get package details" })
   @ApiParam({ name: "package_id", description: "Package ID" })
