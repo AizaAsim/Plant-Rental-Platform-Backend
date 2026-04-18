@@ -49,18 +49,6 @@ export class PackagesController {
     return this.packagesService.getPackagesByNursery(nurseryId);
   }
 
-  @Get(":package_id")
-  @ApiOperation({ summary: "Get package details" })
-  @ApiParam({ name: "package_id", description: "Package ID" })
-  @ApiResponse({
-    status: 200,
-    description: "Package retrieved successfully",
-  })
-  @ApiResponse({ status: 404, description: "Package not found" })
-  async getPackageById(@Param("package_id") packageId: string) {
-    return this.packagesService.getPackageById(packageId);
-  }
-
   @Post("custom")
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
@@ -77,6 +65,7 @@ export class PackagesController {
     return this.packagesService.createCustomPackage(req.user.id, createDto);
   }
 
+  /** Must be registered before @Get(":package_id") so "custom" is not captured as an id. */
   @Get("custom")
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
@@ -103,6 +92,18 @@ export class PackagesController {
     @Param("package_id") packageId: string
   ) {
     return this.packagesService.getCustomPackageById(req.user.id, packageId);
+  }
+
+  @Get(":package_id")
+  @ApiOperation({ summary: "Get package details" })
+  @ApiParam({ name: "package_id", description: "Package ID" })
+  @ApiResponse({
+    status: 200,
+    description: "Package retrieved successfully",
+  })
+  @ApiResponse({ status: 404, description: "Package not found" })
+  async getPackageById(@Param("package_id") packageId: string) {
+    return this.packagesService.getPackageById(packageId);
   }
 
   @Put("custom/:package_id")

@@ -98,11 +98,20 @@ export class NotificationsService {
     reference_id?: string;
     channels: NotifyChannel[];
   }) {
-    const user = await this.prisma.user.findUnique({ where: { id: body.user_id } });
-    if (!user) throw new NotFoundException("User not found");
+    if (!body?.user_id) {
+      throw new BadRequestException("user_id is required");
+    }
+    if (!body?.title || !body?.message) {
+      throw new BadRequestException("title and message are required");
+    }
+    if (!body?.type) {
+      throw new BadRequestException("type is required");
+    }
     if (!body.channels?.length) {
       throw new BadRequestException("channels is required");
     }
+    const user = await this.prisma.user.findUnique({ where: { id: body.user_id } });
+    if (!user) throw new NotFoundException("User not found");
     const result = await this.deliverChannels(
       body.user_id,
       body.title,

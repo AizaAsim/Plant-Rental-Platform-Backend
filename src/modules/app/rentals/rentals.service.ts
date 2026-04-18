@@ -12,7 +12,7 @@ import { ExtendRentalDto } from "./dto/extend-rental.dto";
 import { ConvertToPurchaseDto } from "./dto/convert-to-purchase.dto";
 import { CheckAvailabilityDto } from "./dto/check-availability.dto";
 import { RentalFilterDto } from "./dto/rental-filter.dto";
-import { Prisma, RentalStatus } from "@prisma/client";
+import { Prisma, RentalStatus, TransactionStatus } from "@prisma/client";
 import { PrismaService } from "src/prisma/prisma.service";
 
 @Injectable()
@@ -138,13 +138,13 @@ export class RentalsService {
     let orderBy: any = {};
     switch (sortBy) {
       case "startDate":
-        orderBy = { startDate: sortOrder };
+        orderBy = { rentStartDate: sortOrder };
         break;
       case "endDate":
-        orderBy = { endDate: sortOrder };
+        orderBy = { rentEndDate: sortOrder };
         break;
       case "totalAmount":
-        orderBy = { totalAmount: sortOrder };
+        orderBy = { totalPrice: sortOrder };
         break;
       default:
         orderBy = { createdAt: sortOrder };
@@ -191,7 +191,7 @@ export class RentalsService {
               },
               payments: {
                 where: {
-                  status: "COMPLETED" as any,
+                  status: TransactionStatus.SUCCESS,
                 },
               },
             },
@@ -265,7 +265,7 @@ export class RentalsService {
 
     // Calculate total paid
     const totalPaid = (rental.order.payments || [])
-      .filter((p: any) => p.status === "COMPLETED")
+      .filter((p: any) => p.status === TransactionStatus.SUCCESS)
       .reduce((sum: number, p: any) => sum + Number(p.amount || 0), 0);
 
     const orderTotal = Number(rental.order.totalAmount || 0);
@@ -478,7 +478,7 @@ export class RentalsService {
           include: {
             payments: {
               where: {
-                status: "COMPLETED" as any,
+                status: TransactionStatus.SUCCESS,
               },
             },
           },

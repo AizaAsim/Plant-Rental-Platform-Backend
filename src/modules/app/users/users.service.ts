@@ -242,26 +242,12 @@ export class UsersService {
       throw new NotFoundException("Address not found");
     }
 
-    // Check if address is in use by any active orders
-    const activeOrders = await this.prisma.order.count({
-      where: {
-        userId,
-        deliveryAddressId: addressId,
-        status: {
-          in: [
-            OrderStatus.PENDING,
-            OrderStatus.CONFIRMED,
-            OrderStatus.PROCESSING,
-            OrderStatus.OUT_FOR_DELIVERY,
-            OrderStatus.DELIVERED,
-          ],
-        },
-      },
+    const ordersUsingAddress = await this.prisma.order.count({
+      where: { deliveryAddressId: addressId },
     });
-
-    if (activeOrders > 0) {
+    if (ordersUsingAddress > 0) {
       throw new BadRequestException(
-        "Cannot delete address while having active orders"
+        "Cannot delete an address that is linked to one or more orders"
       );
     }
 

@@ -237,7 +237,13 @@ export class CartService {
 
   // POST /api/v1/cart/items
   async addItem(userId: string, addItemDto: any) {
-    const { plant_id, quantity = 1, order_type, rent_start_date, rent_end_date } = addItemDto;
+    const { plant_id, quantity = 1, order_type, rent_start_date, rent_end_date } = addItemDto ?? {};
+    if (!plant_id) {
+      throw new BadRequestException("plant_id is required");
+    }
+    if (!order_type) {
+      throw new BadRequestException("order_type is required (RENT or BUY)");
+    }
 
     // Validate plant
     const plant = await this.prisma.plant.findFirst({

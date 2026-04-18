@@ -52,7 +52,13 @@ export class ReviewsDisputesService {
       images?: string[];
     }
   ) {
-    if (body.rating < 1 || body.rating > 5) throw new BadRequestException("rating must be 1-5");
+    const ratingNum = Number(body?.rating);
+    if (!Number.isFinite(ratingNum) || ratingNum < 1 || ratingNum > 5) {
+      throw new BadRequestException("rating must be a number from 1 to 5");
+    }
+    if (!body?.reviewable_type || !body?.reviewable_id) {
+      throw new BadRequestException("reviewable_type and reviewable_id are required");
+    }
 
     if (body.order_id) {
       const order = await this.prisma.order.findFirst({
@@ -102,7 +108,7 @@ export class ReviewsDisputesService {
         reviewableId: body.reviewable_id,
         orderId: body.order_id,
         bookingId: body.booking_id,
-        rating: body.rating,
+        rating: ratingNum,
         title: body.title,
         comment: body.comment,
         isVerifiedPurchase: !!(body.order_id || body.booking_id),

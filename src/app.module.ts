@@ -27,6 +27,8 @@ import { MediaModule } from "./modules/app/media/media.module";
 import { AdminModule } from "./modules/app/admin/admin.module";
 import { AnalyticsModule } from "./modules/app/analytics/analytics.module";
 import { ReviewsDisputesModule } from "./modules/app/reviews-disputes/reviews-disputes.module";
+import { AiModule } from "./modules/app/ai/ai.module";
+import { PreferencesModule } from "./modules/app/preferences/preferences.module";
 @Module({
   imports: [
     EventEmitterModule.forRoot(),
@@ -49,6 +51,8 @@ import { ReviewsDisputesModule } from "./modules/app/reviews-disputes/reviews-di
     AdminModule,
     AnalyticsModule,
     ReviewsDisputesModule,
+    PreferencesModule,
+    AiModule,
     CronModule,
     QueueModule,
     EmailModule,

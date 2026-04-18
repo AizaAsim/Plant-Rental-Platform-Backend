@@ -156,7 +156,10 @@ export class GardenersService {
   // ─── Skills ─────────────────────────────────────────────────────────────────
 
   async addSkills(userId: string, skillsDto: any) {
-    const { skill_ids } = skillsDto;
+    const { skill_ids } = skillsDto ?? {};
+    if (!Array.isArray(skill_ids) || skill_ids.length === 0) {
+      throw new BadRequestException("skill_ids must be a non-empty array");
+    }
     const gardener = await this.prisma.gardener.findUnique({ where: { userId } });
     if (!gardener) throw new NotFoundException("Gardener profile not found");
 

@@ -40,6 +40,16 @@ const AppConfig = {
         APP_CERTIFICATE: process.env.APP_AGORA_APP_CERTIFICATE,
         LIVE_SESSION_TOKEN_EXPIRATION: Number(process.env.APP_AGORA_LIVE_SESSION_TOKEN_EXPIRATION),
     },
+    AI: {
+        PLANT_DOCTOR_BASE_URL: (
+            process.env.APP_AI_PLANT_DOCTOR_URL || 'https://plant-doctor-y26i.onrender.com'
+        ).replace(/\/$/, ''),
+        PLANT_RECOMMENDER_BASE_URL: (
+            process.env.APP_AI_PLANT_RECOMMENDER_URL ||
+            'https://plant-recommendation-system.onrender.com'
+        ).replace(/\/$/, ''),
+        TIMEOUT_MS: Number(process.env.APP_AI_TIMEOUT_MS) || 120_000,
+    },
 };
 
 export default AppConfig;

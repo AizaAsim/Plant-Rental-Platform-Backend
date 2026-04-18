@@ -293,8 +293,26 @@ model User {
   settingsUpdated    PlatformSetting[]
   deviceTokens       DeviceToken[]
   customPackages     CustomPlantPackage[]
+  recommendationPreference UserRecommendationPreference?
 
   @@map("users")
+}
+
+model UserRecommendationPreference {
+  id          String   @id @default(uuid())
+  userId      String   @unique @map("user_id")
+  city        String
+  lightPref   String   @map("light_pref")
+  waterPref   String?  @map("water_pref")
+  petFriendly Boolean  @map("pet_friendly")
+  space       String
+  topN        Int      @default(3) @map("top_n")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("user_recommendation_preferences")
 }
 
 model UserAddress {

@@ -567,6 +567,9 @@ export class PaymentsService {
     vendorUserId: string,
     body: { amount: number; bank_detail_id: string }
   ) {
+    if (body?.amount == null || !body?.bank_detail_id) {
+      throw new BadRequestException("amount and bank_detail_id are required");
+    }
     await this.requireVendorNursery(vendorUserId);
     const amount = new Decimal(body.amount);
     if (amount.lt(MIN_PAYOUT_AMOUNT)) {
@@ -724,6 +727,9 @@ export class PaymentsService {
     gardenerUserId: string,
     body: { amount: number; bank_detail_id: string }
   ) {
+    if (body?.amount == null || !body?.bank_detail_id) {
+      throw new BadRequestException("amount and bank_detail_id are required");
+    }
     await this.requireGardener(gardenerUserId);
     const amount = new Decimal(body.amount);
     if (amount.lt(MIN_PAYOUT_AMOUNT)) {
@@ -772,6 +778,17 @@ export class PaymentsService {
       is_primary?: boolean;
     }
   ) {
+    if (
+      !body?.account_holder_name ||
+      !body?.account_number ||
+      !body?.bank_name ||
+      !body?.ifsc_code ||
+      !body?.account_type
+    ) {
+      throw new BadRequestException(
+        "account_holder_name, account_number, bank_name, ifsc_code, and account_type are required"
+      );
+    }
     this.assertIfscMock(body.ifsc_code);
     if (body.is_primary) {
       await this.prisma.bankDetail.updateMany({

@@ -96,7 +96,12 @@ export class AdminService {
     return rest;
   }
 
-  async updateUserStatus(userId: string, body: { is_active: boolean; reason?: string }) {
+  async updateUserStatus(userId: string, body: { is_active?: boolean; reason?: string }) {
+    if (typeof body?.is_active !== "boolean") {
+      throw new BadRequestException("is_active must be a boolean");
+    }
+    const exists = await this.prisma.user.findUnique({ where: { id: userId }, select: { id: true } });
+    if (!exists) throw new NotFoundException("User not found");
     const u = await this.prisma.user.update({
       where: { id: userId },
       data: { isActive: body.is_active },
@@ -112,6 +117,8 @@ export class AdminService {
   }
 
   async verifyUser(userId: string) {
+    const exists = await this.prisma.user.findUnique({ where: { id: userId }, select: { id: true } });
+    if (!exists) throw new NotFoundException("User not found");
     return this.prisma.user.update({
       where: { id: userId },
       data: { isVerified: true },
@@ -239,7 +246,12 @@ export class AdminService {
     return g;
   }
 
-  async verifyGardener(gardenerId: string, body: { is_verified: boolean }) {
+  async verifyGardener(gardenerId: string, body: { is_verified?: boolean }) {
+    if (typeof body?.is_verified !== "boolean") {
+      throw new BadRequestException("is_verified must be a boolean");
+    }
+    const exists = await this.prisma.gardener.findUnique({ where: { id: gardenerId }, select: { id: true } });
+    if (!exists) throw new NotFoundException("Gardener not found");
     const g = await this.prisma.gardener.update({
       where: { id: gardenerId },
       data: { isVerified: body.is_verified },
@@ -380,8 +392,16 @@ export class AdminService {
 
   async processPayout(
     payoutId: string,
-    body: { status: string; bank_reference?: string; notes?: string }
+    body: { status?: string; bank_reference?: string; notes?: string }
   ) {
+    if (!body?.status || typeof body.status !== "string") {
+      throw new BadRequestException("status is required");
+    }
+    if (!Object.values(PayoutStatus).includes(body.status as PayoutStatus)) {
+      throw new BadRequestException("Invalid payout status");
+    }
+    const exists = await this.prisma.payout.findUnique({ where: { id: payoutId }, select: { id: true } });
+    if (!exists) throw new NotFoundException("Payout not found");
     const status = body.status as PayoutStatus;
     const p = await this.prisma.payout.update({
       where: { id: payoutId },
@@ -437,7 +457,12 @@ export class AdminService {
     return d;
   }
 
-  async addDisputeMessageAdmin(disputeId: string, adminUserId: string, body: { message: string; attachments?: string[] }) {
+  async addDisputeMessageAdmin(disputeId: string, adminUserId: string, body: { message?: string; attachments?: string[] }) {
+    if (!body?.message || typeof body.message !== "string" || !body.message.trim()) {
+      throw new BadRequestException("message is required");
+    }
+    const dispute = await this.prisma.dispute.findUnique({ where: { id: disputeId }, select: { id: true } });
+    if (!dispute) throw new NotFoundException("Dispute not found");
     return this.prisma.disputeMessage.create({
       data: {
         disputeId,
@@ -518,12 +543,15 @@ export class AdminService {
   }
 
   async createFeatured(body: {
-    plant_id: string;
-    feature_type: FeatureType;
+    plant_id?: string;
+    feature_type?: FeatureType;
     display_order?: number;
     start_date?: string;
     end_date?: string;
   }) {
+    if (!body?.plant_id || !body?.feature_type) {
+      throw new BadRequestException("plant_id and feature_type are required");
+    }
     return this.prisma.featuredPlant.create({
       data: {
         plantId: body.plant_id,
@@ -536,16 +564,23 @@ export class AdminService {
   }
 
   async updateFeatured(id: string, body: any) {
+    const exists = await this.prisma.featuredPlant.findUnique({ where: { id }, select: { id: true } });
+    if (!exists) throw new NotFoundException("Featured plant not found");
     const data: Prisma.FeaturedPlantUpdateInput = {};
     if (body.display_order != null) data.displayOrder = body.display_order;
     if (body.is_active != null) data.isActive = body.is_active;
     if (body.start_date !== undefined) data.startDate = body.start_date ? new Date(body.start_date) : null;
     if (body.end_date !== undefined) data.endDate = body.end_date ? new Date(body.end_date) : null;
     if (body.feature_type) data.featureType = body.feature_type;
+    if (Object.keys(data).length === 0) {
+      throw new BadRequestException("No fields to update");
+    }
     return this.prisma.featuredPlant.update({ where: { id }, data });
   }
 
   async deleteFeatured(id: string) {
+    const exists = await this.prisma.featuredPlant.findUnique({ where: { id }, select: { id: true } });
+    if (!exists) throw new NotFoundException("Featured plant not found");
     await this.prisma.featuredPlant.delete({ where: { id } });
     return { success: true };
   }
@@ -566,6 +601,17 @@ export class AdminService {
   }
 
   async createCoupon(body: any) {
+    if (
+      !body?.code ||
+      body.discount_value == null ||
+      !body?.valid_from ||
+      !body?.valid_until ||
+      !body?.discount_type
+    ) {
+      throw new BadRequestException(
+        "code, discount_type, discount_value, valid_from, and valid_until are required"
+      );
+    }
     return this.prisma.coupon.create({
       data: {
         code: body.code,
@@ -585,6 +631,8 @@ export class AdminService {
   }
 
   async updateCoupon(couponId: string, body: any) {
+    const exists = await this.prisma.coupon.findUnique({ where: { id: couponId }, select: { id: true } });
+    if (!exists) throw new NotFoundException("Coupon not found");
     const data: Prisma.CouponUpdateInput = {};
     if (body.description != null) data.description = body.description;
     if (body.discount_value != null) data.discountValue = new Decimal(body.discount_value);
@@ -596,10 +644,15 @@ export class AdminService {
     if (body.valid_from) data.validFrom = new Date(body.valid_from);
     if (body.valid_until) data.validUntil = new Date(body.valid_until);
     if (body.is_active != null) data.isActive = body.is_active;
+    if (Object.keys(data).length === 0) {
+      throw new BadRequestException("No fields to update");
+    }
     return this.prisma.coupon.update({ where: { id: couponId }, data });
   }
 
   async deactivateCoupon(couponId: string) {
+    const exists = await this.prisma.coupon.findUnique({ where: { id: couponId }, select: { id: true } });
+    if (!exists) throw new NotFoundException("Coupon not found");
     await this.prisma.coupon.update({ where: { id: couponId }, data: { isActive: false } });
     return { success: true };
   }
@@ -609,7 +662,13 @@ export class AdminService {
     return this.prisma.platformSetting.findMany({ orderBy: { key: "asc" } });
   }
 
-  async upsertSetting(key: string, body: { value: string }, adminId?: string) {
+  async upsertSetting(key: string, body: { value?: string }, adminId?: string) {
+    if (body?.value === undefined || body?.value === null) {
+      throw new BadRequestException("value is required");
+    }
+    if (typeof body.value !== "string") {
+      throw new BadRequestException("value must be a string");
+    }
     return this.prisma.platformSetting.upsert({
       where: { key },
       create: { key, value: body.value, updatedBy: adminId },
@@ -659,7 +718,10 @@ export class AdminService {
     return build(null);
   }
 
-  async createCategory(body: { name: string; description?: string; image_url?: string; parent_id?: string }) {
+  async createCategory(body: { name?: string; description?: string; image_url?: string; parent_id?: string }) {
+    if (!body?.name || typeof body.name !== "string") {
+      throw new BadRequestException("name is required");
+    }
     return this.prisma.plantCategory.create({
       data: {
         name: body.name,
@@ -672,6 +734,8 @@ export class AdminService {
   }
 
   async updateCategory(categoryId: string, body: any) {
+    const exists = await this.prisma.plantCategory.findUnique({ where: { id: categoryId }, select: { id: true } });
+    if (!exists) throw new NotFoundException("Category not found");
     const data: Prisma.PlantCategoryUpdateInput = {};
     if (body.name != null) data.name = body.name;
     if (body.description !== undefined) data.description = body.description;
@@ -682,10 +746,15 @@ export class AdminService {
         : { disconnect: true };
     }
     if (body.is_active != null) data.isActive = body.is_active;
+    if (Object.keys(data).length === 0) {
+      throw new BadRequestException("No fields to update");
+    }
     return this.prisma.plantCategory.update({ where: { id: categoryId }, data });
   }
 
   async deleteCategory(categoryId: string) {
+    const cat = await this.prisma.plantCategory.findUnique({ where: { id: categoryId }, select: { id: true } });
+    if (!cat) throw new NotFoundException("Category not found");
     const count = await this.prisma.plant.count({ where: { categoryId } });
     if (count > 0) {
       throw new BadRequestException("Cannot delete category with assigned plants");
@@ -703,11 +772,16 @@ export class AdminService {
     return this.prisma.gardenerSkill.findMany({ orderBy: { name: "asc" } });
   }
 
-  async createSkill(body: { name: string }) {
+  async createSkill(body: { name?: string }) {
+    if (!body?.name || typeof body.name !== "string") {
+      throw new BadRequestException("name is required");
+    }
     return this.prisma.gardenerSkill.create({ data: { name: body.name } });
   }
 
   async deleteSkill(skillId: string) {
+    const skill = await this.prisma.gardenerSkill.findUnique({ where: { id: skillId }, select: { id: true } });
+    if (!skill) throw new NotFoundException("Skill not found");
     const maps = await this.prisma.gardenerSkillMapping.count({ where: { skillId } });
     if (maps > 0) throw new BadRequestException("Skill is assigned to gardeners");
     await this.prisma.gardenerSkill.delete({ where: { id: skillId } });

@@ -813,8 +813,16 @@ export class PlantsService {
       return { message: "Plant deactivated due to active rentals" };
     }
 
-    await this.prisma.plant.delete({ where: { id: plantId } });
-    return { message: "Plant deleted successfully" };
+    try {
+      await this.prisma.plant.delete({ where: { id: plantId } });
+      return { message: "Plant deleted successfully" };
+    } catch (e) {
+      if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === "P2003") {
+        await this.prisma.plant.update({ where: { id: plantId }, data: { isActive: false } });
+        return { message: "Plant has related records; it was deactivated instead of deleted" };
+      }
+      throw e;
+    }
   }
 
   // ─── PUT /api/v1/plants/vendor/plants/:plant_id/stock ────────────────────
@@ -882,6 +890,13 @@ export class PlantsService {
 
     if (plant.images.length <= 1) {
       throw new BadRequestException("Cannot delete the only remaining image");
+    }
+
+    const image = await this.prisma.plantImage.findFirst({
+      where: { id: imageId, plantId },
+    });
+    if (!image) {
+      throw new NotFoundException("Image not found");
     }
 
     await this.prisma.plantImage.delete({ where: { id: imageId } });

@@ -651,7 +651,10 @@ export class OrdersService {
 
   // POST /api/v1/orders/{order_id}/items/{item_id}/extend-rental
   async extendRental(userId: string, orderId: string, itemId: string, extendDto: any) {
-    const { new_end_date } = extendDto;
+    const { new_end_date } = extendDto ?? {};
+    if (!new_end_date) {
+      throw new BadRequestException("new_end_date is required");
+    }
 
     const order = await this.prisma.order.findFirst({
       where: {
@@ -686,6 +689,9 @@ export class OrdersService {
     }
 
     const newEndDate = new Date(new_end_date);
+    if (Number.isNaN(newEndDate.getTime())) {
+      throw new BadRequestException("Invalid new_end_date");
+    }
     const originalEndDate = orderItem.rentEndDate;
 
     if (!originalEndDate) {

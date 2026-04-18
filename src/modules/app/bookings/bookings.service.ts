@@ -19,6 +19,27 @@ export class BookingsService {
     return `BK-${timestamp}-${random}`;
   }
 
+  /** Normalize stored service time (Decimal hours or "HH:MM") to a float hour-of-day. */
+  private asHourFloat(t: unknown): number {
+    if (t == null || t === "") return NaN;
+    if (typeof t === "number" && Number.isFinite(t)) return t;
+    const s = String(t);
+    if (s.includes(":")) {
+      const [h, m] = s.split(":").map((x) => Number(x));
+      if (Number.isFinite(h)) return h + (Number.isFinite(m) ? m / 60 : 0);
+    }
+    const n = Number(t);
+    return Number.isFinite(n) ? n : NaN;
+  }
+
+  /** Persist `serviceTime` as Prisma `String` (DB column is string). */
+  private formatHourString(h: number): string {
+    if (!Number.isFinite(h)) return "0:00";
+    const hh = Math.floor(h);
+    const mm = Math.round((h - hh) * 60) % 60;
+    return `${hh}:${String(mm).padStart(2, "0")}`;
+  }
+
   // POST /api/v1/bookings
   async createBooking(userId: string, createDto: any) {
     const {
@@ -31,7 +52,21 @@ export class BookingsService {
       recurrence_pattern,
       recurrence_end_date,
       notes,
-    } = createDto;
+    } = createDto ?? {};
+
+    if (
+      !gardener_id ||
+      !service_address_id ||
+      !service_type ||
+      !service_date ||
+      service_time == null ||
+      service_time === "" ||
+      duration_hours == null
+    ) {
+      throw new BadRequestException(
+        "gardener_id, service_address_id, service_type, service_date, service_time, and duration_hours are required"
+      );
+    }
 
     // Validate gardener
     const gardener = await this.prisma.gardener.findUnique({
@@ -82,8 +117,11 @@ export class BookingsService {
       throw new BadRequestException("Gardener not available on this day");
     }
 
-    // Check time slot
-    if (service_time < dayAvailability.startTime || service_time > dayAvailability.endTime) {
+    const reqHour = this.asHourFloat(service_time);
+    if (
+      reqHour < this.asHourFloat(dayAvailability.startTime) ||
+      reqHour > this.asHourFloat(dayAvailability.endTime)
+    ) {
       throw new BadRequestException("Service time outside gardener availability");
     }
 
@@ -99,14 +137,11 @@ export class BookingsService {
     });
 
     for (const booking of conflictingBookings) {
-      const bookingStart = booking.serviceTime;
-      const bookingEnd = this.addHours(bookingStart, Number(booking.durationHours));
-      const requestedEnd = this.addHours(service_time, duration_hours);
-
-      if (
-        (service_time >= bookingStart && service_time < bookingEnd) ||
-        (requestedEnd > bookingStart && requestedEnd <= bookingEnd)
-      ) {
+      const bookingStart = this.asHourFloat(booking.serviceTime);
+      const bookingEnd = bookingStart + Number(booking.durationHours);
+      const reqStart = reqHour;
+      const reqEnd = reqStart + Number(duration_hours);
+      if (reqStart < bookingEnd && reqEnd > bookingStart) {
         throw new BadRequestException("Time slot already booked");
       }
     }
@@ -123,7 +158,7 @@ export class BookingsService {
         serviceAddressId: service_address_id,
         serviceType: service_type,
         serviceDate: serviceDate,
-        serviceTime: service_time,
+        serviceTime: this.formatHourString(reqHour),
         durationHours: new Decimal(duration_hours),
         recurrencePattern: recurrence_pattern,
         recurrenceEndDate: recurrence_end_date ? new Date(recurrence_end_date) : null,
@@ -398,14 +433,11 @@ export class BookingsService {
     });
 
     for (const conflictBooking of conflictingBookings) {
-      const bookingStart = conflictBooking.serviceTime;
-      const bookingEnd = this.addHours(bookingStart, Number(conflictBooking.durationHours));
-      const requestedEnd = this.addHours(new_time, Number(booking.durationHours));
-
-      if (
-        (new_time >= bookingStart && new_time < bookingEnd) ||
-        (requestedEnd > bookingStart && requestedEnd <= bookingEnd)
-      ) {
+      const bookingStart = this.asHourFloat(conflictBooking.serviceTime);
+      const bookingEnd = bookingStart + Number(conflictBooking.durationHours);
+      const reqStart = this.asHourFloat(new_time);
+      const reqEnd = reqStart + Number(booking.durationHours);
+      if (reqStart < bookingEnd && reqEnd > bookingStart) {
         throw new BadRequestException("Time slot already booked");
       }
     }
@@ -868,16 +900,4 @@ export class BookingsService {
   }
 
   // Helper: Add hours to time string
-  private addHours(timeString: string, hours: number): string {
-    const [hour, minute] = timeString.split(":").map(Number);
-    let newHour = hour + Math.floor(hours);
-    let newMinute = minute + (hours % 1) * 60;
-
-    if (newMinute >= 60) {
-      newHour++;
-      newMinute -= 60;
-    }
-
-    return `${String(newHour).padStart(2, "0")}:${String(newMinute).padStart(2, "0")}`;
-  }
 }

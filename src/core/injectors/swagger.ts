@@ -5,6 +5,13 @@ export default function InjectSwagger(app: INestApplication) {
     const v1Options = new DocumentBuilder()
         .setTitle('API')
         .setVersion('1.0')
+        .setDescription(
+            'OpenAPI UI path: **/v1/api** (not /api-docs). After code changes, restart the server so routes and descriptions refresh.',
+        )
+        .addTag(
+            'Preferences',
+            'Saved recommendation fields from the client modal: `GET/PUT /api/v1/preferences/recommendation`. Consumed by `POST /api/v1/ai/recommender/recommend` when the body is `{}` or omitted.',
+        )
         .addBearerAuth(
             {
                 type: 'http',
