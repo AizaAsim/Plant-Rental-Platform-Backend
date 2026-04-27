@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Plant Rental — Current API Flow (as implemented)</title>
+  <style>
+    :root {
+      --bg: #f6f4ef;
+      --ink: #1a1a2e;
+      --muted: #5c5c7a;
+      --card: #fff;
+      --border: #e0dcd0;
+      --accent: #1e6b45;
+      --warn: #b45309;
+      --code: #0f172a;
+    }
+    * { box-sizing: border-box; }
+    body {
+      font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--ink);
+      line-height: 1.65;
+      margin: 0;
+      padding: 0 0 64px;
+      font-size: 15px;
+    }
+    .wrap { max-width: 820px; margin: 0 auto; padding: 32px 20px; }
+    header {
+      background: linear-gradient(135deg, #1a1a2e 0%, #2d3a4a 100%);
+      color: #fff;
+      padding: 40px 20px 36px;
+      margin-bottom: 32px;
+    }
+    header h1 { font-size: 1.75rem; font-weight: 700; margin: 0 0 12px; }
+    header p { margin: 0; opacity: 0.9; max-width: 640px; font-size: 0.95rem; }
+    .banner {
+      background: #fff8e6;
+      border: 1px solid #f0d78c;
+      border-radius: 8px;
+      padding: 16px 18px;
+      margin-bottom: 28px;
+      color: #713f12;
+      font-size: 0.9rem;
+    }
+    .banner strong { color: #92400e; }
+    h2 {
+      font-size: 1.15rem;
+      margin: 36px 0 14px;
+      padding-bottom: 8px;
+      border-bottom: 2px solid var(--accent);
+      color: var(--accent);
+    }
+    h3 { font-size: 1.02rem; margin: 24px 0 10px; color: var(--ink); }
+    p { margin: 0 0 12px; color: var(--muted); }
+    p strong { color: var(--ink); }
+    .phase {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 20px 22px 8px;
+      margin-bottom: 18px;
+    }
+    .phase-num {
+      display: inline-block;
+      background: var(--accent);
+      color: #fff;
+      font-size: 0.7rem;
+      font-weight: 700;
+      padding: 3px 10px;
+      border-radius: 4px;
+      letter-spacing: 0.04em;
+      margin-bottom: 10px;
+    }
+    ol.steps { margin: 0; padding-left: 22px; }
+    ol.steps li { margin-bottom: 14px; color: var(--muted); }
+    ol.steps li strong { color: var(--ink); }
+    code, .api {
+      font-family: ui-monospace, "Cascadia Code", "SF Mono", Menlo, monospace;
+      font-size: 0.84em;
+      background: #eef1f4;
+      padding: 2px 6px;
+      border-radius: 4px;
+      color: var(--code);
+    }
+    pre.api-line {
+      background: #0f172a;
+      color: #e2e8f0;
+      padding: 10px 14px;
+      border-radius: 8px;
+      font-size: 0.8rem;
+      overflow-x: auto;
+      margin: 8px 0 16px;
+    }
+    .note {
+      font-size: 0.88rem;
+      background: #f0fdf4;
+      border-left: 4px solid var(--accent);
+      padding: 12px 14px;
+      margin: 12px 0 0;
+      color: #14532d;
+    }
+    .warn-note {
+      font-size: 0.88rem;
+      background: #fffbeb;
+      border-left: 4px solid var(--warn);
+      padding: 12px 14px;
+      margin: 12px 0 0;
+      color: #78350f;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.88rem;
+      margin: 12px 0 20px;
+    }
+    th, td { border: 1px solid var(--border); padding: 8px 10px; text-align: left; }
+    th { background: #eef0eb; color: var(--ink); }
+    footer {
+      margin-top: 40px;
+      font-size: 0.8rem;
+      color: var(--muted);
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="wrap">
+      <h1>Plant rental — <em style="font-style: normal; color: #a8d5bb">current backend flow</em></h1>
+      <p>
+        This page describes what the <strong>existing API</strong> actually does today, so product and mobile can align
+        without assuming a different state machine. Base path: <code>/api/v1</code> (see Swagger at <code>/v1/api</code> if enabled).
+      </p>
+    </div>
+  </header>
+
+  <div class="wrap">
+    <div class="banner">
+      <strong>Intentional scope:</strong> this doc matches <strong>implemented behaviour</strong> (Prisma <code>OrderStatus</code>, <code>workflowMeta</code> JSON, mock payments).
+      It is <strong>not</strong> a full “ideal” spec: some product docs use labels like <code>APPROVED</code> or <code>EXPIRED</code> that are <strong>not</strong> separate enum values in the database.
+    </div>
+
+    <h2>1. Order status (what the DB uses)</h2>
+    <p>Orders use Prisma <code>OrderStatus</code>, for example:</p>
+    <table>
+      <thead>
+        <tr><th>Status</th><th>Typical meaning in this app</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><code>PENDING</code></td><td>Submitted; awaiting vendor action.</td></tr>
+        <tr><td><code>CONFIRMED</code></td><td>Vendor has approved with plant selections; customer may still need to pay (check <code>paymentStatus</code>).</td></tr>
+        <tr><td><code>PROCESSING</code></td><td>Vendor sent order to processing (after payment is paid where required).</td></tr>
+        <tr><td><code>OUT_FOR_DELIVERY</code></td><td>Used when delivery is in progress (e.g. after customer confirmed a slot in contract flow paths).</td></tr>
+        <tr><td><code>DELIVERED</code></td><td>Delivery completed; rental lines can become active.</td></tr>
+        <tr><td><code>COMPLETED</code></td><td>Order/rental lifecycle completed.</td></tr>
+        <tr><td><code>CANCELLED</code></td><td>Cancelled (customer/vendor/system depending on path).</td></tr>
+      </tbody>
+    </table>
+    <p class="note">
+      <strong>Product tip:</strong> show “Pay now” when <code>paymentStatus === PENDING</code> (or your gateway state), not only from <code>status</code>. After vendor approve, the API may set <code>status</code> to <code>CONFIRMED</code> while payment is still pending.
+    </p>
+
+    <h2>2. Customer journey (core rental order)</h2>
+    <div class="phase">
+      <div class="phase-num">A — BROWSE &amp; CART</div>
+      <ol class="steps">
+        <li><strong>Discovery:</strong> <code>GET /api/v1/nurseries</code>, <code>GET /api/v1/nurseries/:id</code>, plants listings.</li>
+        <li><strong>Cart:</strong> <code>GET/POST/PUT /api/v1/cart/...</code> (packages may use existing public package APIs unless the app is switched to vendor packages).</li>
+        <li><strong>Checkout:</strong> <code>POST /api/v1/orders/checkout</code> → creates order (typically <code>PENDING</code>).</li>
+      </ol>
+    </div>
+
+    <div class="phase">
+      <div class="phase-num">B — VENDOR APPROVE</div>
+      <ol class="steps">
+        <li>Vendor: <code>PUT /api/v1/orders/vendor/orders/:order_id/approve</code> with <code>plant_selections[]</code> (every line must be covered).</li>
+        <li>Backend sets order to <code>CONFIRMED</code> and stores selections. Customer should be prompted to <strong>pay</strong> if <code>paymentStatus</code> is not <code>PAID</code>.</li>
+      </ol>
+    </div>
+
+    <div class="phase">
+      <div class="phase-num">C — PAYMENT</div>
+      <ol class="steps">
+        <li><code>POST /api/v1/payments/initiate</code> (mock gateway).</li>
+        <li><code>POST /api/v1/payments/verify</code> with gateway fields — on success, payment is captured and order payment moves toward paid; <strong>optional</strong> <code>Idempotency-Key</code> header replays the same result for the same body.</li>
+      </ol>
+    </div>
+
+    <div class="phase">
+      <div class="phase-num">D — VENDOR PROCESS &amp; DELIVERY</div>
+      <ol class="steps">
+        <li>After payment is <code>PAID</code> (and order <code>CONFIRMED</code>), vendor: <code>POST /api/v1/orders/vendor/orders/:order_id/process</code> → <code>PROCESSING</code>.</li>
+        <li><strong>Propose delivery slots (contract path):</strong> <code>POST .../propose-delivery-slots</code> with <code>delivery_slots[]</code> — stored in <code>order.workflowMeta</code>.</li>
+        <li><strong>Assign gardener (maintenance schedule + optional slot hints):</strong> <code>POST .../assign-gardener</code> (existing). Extra slot arrays can be merged into <code>workflowMeta</code> when sent.</li>
+        <li><strong>Customer picks a slot (contract path):</strong> <code>POST /api/v1/orders/:order_id/customer-delivery-response</code> (<code>action: CONFIRM</code> with <code>selected_slot_id</code>, or request different time).</li>
+        <li><strong>Complete delivery:</strong> <code>POST .../complete-delivery</code> — optional JSON body is merged into <code>workflowMeta.deliveryCompletion</code>; rental lines are activated as implemented in the service.</li>
+      </ol>
+      <p class="warn-note">
+        <strong>Docs vs one UI action:</strong> the product may show “schedule delivery” as one screen, but the backend may require <strong>more than one</strong> call (e.g. propose slots, then assign gardener). The client should sequence calls or the backend can be extended later to bundle them.
+      </p>
+    </div>
+
+    <div class="phase">
+      <div class="phase-num">E — RETURN (contract-style)</div>
+      <ol class="steps">
+        <li>Vendor: <code>POST .../vendor/orders/:order_id/initiate-return</code> (pickup slots in body → <code>workflowMeta</code>).</li>
+        <li>Customer: <code>POST /api/v1/orders/:order_id/customer-return-response</code>.</li>
+        <li>Vendor: <code>POST .../complete-return</code> with per-line condition / restock flags.</li>
+        <li>Customer cancel pre-payment: <code>POST /api/v1/orders/:order_id/cancel</code> (allowed only in early states per server rules).</li>
+      </ol>
+    </div>
+
+    <div class="phase">
+      <div class="phase-num">F — PENALTY (simplified API)</div>
+      <ol class="steps">
+        <li><code>GET /api/v1/orders/:order_id/penalty</code></li>
+        <li><code>POST /api/v1/orders/:order_id/finalize-penalty</code></li>
+      </ol>
+      <p class="note">Accrual rules may be simpler than a full finance spec; treat as <strong>integration surface</strong> and confirm numbers with backend for production.</p>
+    </div>
+
+    <h2>3. Parallel flows (separate from nursery rental order state machine)</h2>
+    <h3>Vendor packages (own catalogue)</h3>
+    <pre class="api-line">POST/GET/PUT/DELETE  /api/v1/vendor/packages</pre>
+    <p>CRUD for vendor-defined packages. The legacy public <code>/api/v1/packages</code> may still be used by older clients until the app migrates.</p>
+
+    <h3>Staff gardeners (vendor-created accounts)</h3>
+    <pre class="api-line">POST/GET/PUT  /api/v1/nurseries/my-nursery/gardeners[...]  (create, get, update, status, reset-credentials)</pre>
+    <p>Aligned with “vendor issues credentials” flows; not invite-code onboarding.</p>
+
+    <h3>Freelance jobs (Basic tier add-on in product copy)</h3>
+    <pre class="api-line">/api/v1/freelance-jobs  (create, my-requests, open, accept, my-jobs, start, complete, review)</pre>
+    <p>Independent of nursery task assignment; uses <code>FreelanceJob</code> records.</p>
+
+    <h3>Preferences (recommender)</h3>
+    <pre class="api-line">GET/PUT  /api/v1/preferences/recommendation  →  POST /api/v1/ai/recommender/recommend  (optional body overrides)</pre>
+
+    <h3>Internal / admin (ops)</h3>
+    <pre class="api-line">POST /api/v1/internal/jobs/...  (admin) · GET/PUT /api/v1/admin/settings/freelance-match-config · manual-orders</pre>
+
+    <h2>4. What this HTML deliberately does <em>not</em> promise</h2>
+    <ul style="color: var(--muted); margin: 0 0 20px; padding-left: 22px;">
+      <li>Automatic <strong>6-hour expiry</strong> with a dedicated <code>EXPIRED</code> status (unless you add a job + rules — verify with latest <code>orders</code> + cron code).</li>
+      <li>Full <strong>slot state machine</strong> (HELD, RELEASED, etc.) in SQL — many flows use <code>workflowMeta</code> JSON instead.</li>
+      <li>Identical labels to a marketing PDF: map UI copy to the <strong>fields above</strong> (status + paymentStatus + workflowMeta).</li>
+    </ul>
+
+    <footer>
+      File: <code>docs/current-api-business-flow.html</code> — edit in-repo as the API evolves. Regenerate or replace when the state machine is formally migrated.
+    </footer>
+  </div>
+</body>
+</html>

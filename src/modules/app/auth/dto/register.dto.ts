@@ -86,4 +86,12 @@ export class RegisterDto {
   @IsOptional()
   @IsString()
   gst_number?: string;
+
+  @ApiPropertyOptional({
+    example: "STAFF",
+    description: "MOD-01: when role is GARDENER, optional staff vs freelance hint (stored in register_meta)",
+  })
+  @IsOptional()
+  @IsString()
+  gardener_type?: string;
 }

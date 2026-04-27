@@ -294,6 +294,10 @@ model User {
   deviceTokens       DeviceToken[]
   customPackages     CustomPlantPackage[]
   recommendationPreference UserRecommendationPreference?
+  registerMeta     Json?    @map("register_meta")
+  mustChangePassword Boolean @default(false) @map("must_change_password")
+  idempotencyRecords   IdempotencyRecord[]
+  freelanceJobsRequested FreelanceJob[]    @relation("FreelanceJobCustomer")
 
   @@map("users")
 }
@@ -334,6 +338,7 @@ model UserAddress {
   orders            Order[]
   serviceBookings   ServiceBooking[]
   maintenanceTasks  MaintenanceTask[]
+  freelanceJobs     FreelanceJob[]
 
   @@map("user_addresses")
 }
@@ -398,6 +403,7 @@ model Nursery {
   orders         Order[]
   maintenanceTasks MaintenanceTask[]
   vendorEarnings VendorEarning[]
+  vendorPackages  VendorPackage[]
 
   @@map("nurseries")
   NurseryInvitation NurseryInvitation[]
@@ -567,6 +573,11 @@ model Gardener {
   serviceBookings   ServiceBooking[]
   maintenanceTasks  MaintenanceTask[]
   gardenerEarnings  GardenerEarning[]
+  staffRole         String?   @map("staff_role")
+  staffNotes        String?   @map("staff_notes") @db.Text
+  deactivatedAt     DateTime? @map("deactivated_at")
+  deactivateReason  String?   @map("deactivate_reason") @db.Text
+  acceptedFreelanceJobs FreelanceJob[] @relation("FreelanceAcceptedBy")
 
   @@map("gardeners")
   NurseryInvitation NurseryInvitation[]
@@ -684,6 +695,10 @@ model Order {
   disputes        Dispute[]
   couponUsage               CouponUsage[]
   vendorApprovalSelections  Json?         @map("vendor_approval_selections")
+  workflowMeta              Json?         @map("workflow_meta")
+  manualIntervention        ManualInterventionOrder?
+  orderPenalty              OrderPenalty?
+  freelanceJobs             FreelanceJob[]
 
   @@map("orders")
 }
@@ -1274,4 +1289,143 @@ enum InvitationStatus {
   ACCEPTED
   DECLINED
   EXPIRED
+}
+
+// --- Contract v3.1 additional enums & models ---
+
+enum FreelanceJobStatus {
+  OPEN
+  ACCEPTED
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED
+}
+
+enum ManualInterventionStatus {
+  OPEN
+  RESOLVED
+}
+
+enum OrderPenaltyPayStatus {
+  PENDING
+  PAID
+}
+
+model VendorPackage {
+  id                    String   @id @default(uuid())
+  publicId              String   @unique @map("public_id")
+  nurseryId             String   @map("nursery_id")
+  name                  String
+  tier                  String
+  description           String?  @db.Text
+  maxPlantCount         Int      @map("max_plant_count")
+  rentalDurationDays    Int      @map("rental_duration_days")
+  includesMaintenance   Boolean  @default(false) @map("includes_maintenance")
+  maintenanceVisitsPerMonth Int  @default(0) @map("maintenance_visits_per_month")
+  basePrice             Decimal  @map("base_price") @db.Decimal(12, 2)
+  depositAmount         Decimal  @default(0) @map("deposit_amount") @db.Decimal(12, 2)
+  allowsInstallments    Boolean  @default(false) @map("allows_installments")
+  installmentOptions    Json?    @map("installment_options")
+  addOns                Json?    @map("add_ons")
+  isActive              Boolean  @default(true) @map("is_active")
+  createdAt             DateTime @default(now()) @map("created_at")
+  updatedAt             DateTime @updatedAt @map("updated_at")
+
+  nursery Nursery @relation(fields: [nurseryId], references: [id], onDelete: Cascade)
+
+  @@index([nurseryId, isActive])
+  @@map("vendor_packages")
+}
+
+model FreelanceJob {
+  id                  String   @id @default(uuid())
+  publicId            String   @unique @map("public_id")
+  userId              String   @map("user_id")
+  orderId             String?  @map("order_id")
+  deliveryAddressId   String   @map("delivery_address_id")
+  careTypes           String[] @map("care_types")
+  preferredDate       DateTime @map("preferred_date") @db.Date
+  timeFrom            String   @map("time_from")
+  timeTo              String   @map("time_to")
+  plantDetails        String?  @map("plant_details") @db.Text
+  specialInstructions String?  @map("special_instructions") @db.Text
+  status              FreelanceJobStatus @default(OPEN)
+  acceptedGardenerId  String?  @map("accepted_gardener_id")
+  city                String?
+  pincode             String?
+  startedAt           DateTime? @map("started_at")
+  completedAt         DateTime? @map("completed_at")
+  completionNotes     String?  @map("completion_notes") @db.Text
+  completionPhotoUrls Json?     @map("completion_photo_urls")
+  reviewRating        Int?     @map("review_rating")
+  reviewComment       String?  @map("review_comment") @db.Text
+  createdAt           DateTime @default(now()) @map("created_at")
+  updatedAt           DateTime @updatedAt @map("updated_at")
+
+  user     User     @relation("FreelanceJobCustomer", fields: [userId], references: [id], onDelete: Cascade)
+  order    Order?   @relation(fields: [orderId], references: [id], onDelete: SetNull)
+  address  UserAddress @relation(fields: [deliveryAddressId], references: [id])
+  acceptedBy Gardener?  @relation("FreelanceAcceptedBy", fields: [acceptedGardenerId], references: [id], onDelete: SetNull)
+
+  @@index([status, createdAt])
+  @@map("freelance_jobs")
+}
+
+model IdempotencyRecord {
+  id           String   @id @default(uuid())
+  key          String
+  userId       String?  @map("user_id")
+  route        String
+  requestHash  String   @map("request_hash")
+  responseBody Json     @map("response_body")
+  statusCode   Int      @map("status_code")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  user User? @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([key, route])
+  @@index([key])
+  @@map("idempotency_records")
+}
+
+model ManualInterventionOrder {
+  id         String   @id @default(uuid())
+  orderId    String   @unique @map("order_id")
+  status     ManualInterventionStatus @default(OPEN)
+  priority   String?  @default("NORMAL")
+  reason     String?  @db.Text
+  resolutionNote String? @map("resolution_note") @db.Text
+  createdAt  DateTime @default(now()) @map("created_at")
+  resolvedAt DateTime? @map("resolved_at")
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@map("manual_intervention_orders")
+}
+
+model OrderPenalty {
+  id                String   @id @default(uuid())
+  orderId           String   @unique @map("order_id")
+  overdueDays       Int      @default(0) @map("overdue_days")
+  penaltyMultiplier  Decimal? @map("penalty_multiplier") @db.Decimal(6, 4)
+  runningTotal      Decimal  @default(0) @map("running_total") @db.Decimal(12, 2)
+  avgDailyRate      Decimal? @map("avg_daily_rate") @db.Decimal(12, 2)
+  payStatus         OrderPenaltyPayStatus @default(PENDING) @map("pay_status")
+  meta              Json?
+  createdAt         DateTime @default(now()) @map("created_at")
+  updatedAt         DateTime @updatedAt @map("updated_at")
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@map("order_penalties")
+}
+
+model FreelanceMatchConfig {
+  id                         String  @id @default("singleton")
+  autoMatchEnabled           Boolean @default(false) @map("auto_match_enabled")
+  autoMatchScoreThreshold    Decimal @default(0.8) @map("auto_match_score_threshold") @db.Decimal(4, 3)
+  gardenerAcceptWindowMinutes Int   @default(30) @map("gardener_accept_window_minutes")
+  updatedAt                  DateTime @updatedAt @map("updated_at")
+
+  @@map("freelance_match_config")
 }

@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException, BadRequestException } from "@nestjs/common";
+import { HttpException, Injectable, NotFoundException, BadRequestException } from "@nestjs/common";
 import {
   Prisma,
   PaymentType,
@@ -12,6 +12,7 @@ import {
   EarningType,
 } from "@prisma/client";
 import { PrismaService } from "src/prisma/prisma.service";
+import { IdempotencyService } from "src/common/contract/idempotency.service";
 import { Decimal } from "@prisma/client/runtime/library";
 import { randomUUID } from "crypto";
 
@@ -23,7 +24,10 @@ type PaymentFor = "ORDER" | "BOOKING" | "RENTAL_EXTENSION";
 
 @Injectable()
 export class PaymentsService {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private readonly idempotency: IdempotencyService
+  ) {}
 
   private mapPaymentForToType(paymentFor: PaymentFor): PaymentType {
     if (paymentFor === "ORDER") return PaymentType.ORDER;
@@ -129,11 +133,23 @@ export class PaymentsService {
       gateway_order_id: string;
       gateway_payment_id: string;
       gateway_signature: string;
-    }
+    },
+    idempotencyKey?: string
   ) {
     const { gateway_order_id } = body;
     if (!gateway_order_id) {
       throw new BadRequestException("gateway_order_id is required");
+    }
+
+    const route = "POST /api/v1/payments/verify";
+    if (idempotencyKey) {
+      const replay = await this.idempotency.getReplay(idempotencyKey, route, userId, body);
+      if (replay) {
+        if (replay.statusCode === 409) {
+          throw new HttpException(replay.body, 409);
+        }
+        return replay.body;
+      }
     }
 
     const payment = await this.prisma.payment.findFirst({
@@ -228,7 +244,7 @@ export class PaymentsService {
       });
     }
 
-    return {
+    const out = {
       success: true,
       verified: true,
       mock: true,
@@ -236,6 +252,10 @@ export class PaymentsService {
       status: TransactionStatus.SUCCESS,
       message: "Mock verify succeeded for all inputs",
     };
+    if (idempotencyKey) {
+      await this.idempotency.save(idempotencyKey, route, userId, body, 200, out);
+    }
+    return out;
   }
 
   async webhook(_payload: Record<string, unknown>) {

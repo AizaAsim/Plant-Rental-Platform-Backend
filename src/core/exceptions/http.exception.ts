@@ -53,6 +53,17 @@ export class HttpExceptionFilter implements ExceptionFilter {
     const status = exception.getStatus();
     const exceptionResponse: any = exception.getResponse();
 
+    // API contract v3.1 shape: { success: false, error: { code, message } }
+    if (
+      typeof exceptionResponse === 'object' &&
+      exceptionResponse !== null &&
+      exceptionResponse['success'] === false &&
+      exceptionResponse['error']
+    ) {
+      response.status(status).json(exceptionResponse);
+      return;
+    }
+
     if (
       exception instanceof BadRequestException &&
       exceptionResponse.message &&

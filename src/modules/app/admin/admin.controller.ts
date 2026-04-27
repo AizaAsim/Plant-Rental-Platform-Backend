@@ -284,4 +284,30 @@ export class AdminController {
   async skillDelete(@Param("skill_id") id: string) {
     return this.adminService.deleteSkill(id);
   }
+
+  @Get("manual-orders")
+  @ApiOperation({ summary: "Manual intervention queue (MISS-19)" })
+  async manualOrders(@Query() q: { status?: string; priority?: string; page?: string; limit?: string }) {
+    return this.adminService.listManualOrders(q);
+  }
+
+  @Post("manual-orders/:order_id/resolve")
+  @ApiOperation({ summary: "Resolve manual case (MISS-20)" })
+  async manualResolve(@Param("order_id") orderId: string, @Body() body: { action: string; note?: string }) {
+    return this.adminService.resolveManualOrder(orderId, body);
+  }
+
+  @Get("settings/freelance-match-config")
+  @ApiOperation({ summary: "Freelance auto-match config (MISS-12)" })
+  async freelanceConfigGet() {
+    return this.adminService.getFreelanceMatchConfig();
+  }
+
+  @Put("settings/freelance-match-config")
+  @ApiOperation({ summary: "Update freelance auto-match config" })
+  async freelanceConfigPut(
+    @Body() body: { auto_match_enabled?: boolean; auto_match_score_threshold?: number; gardener_accept_window_minutes?: number }
+  ) {
+    return this.adminService.setFreelanceMatchConfig(body);
+  }
 }

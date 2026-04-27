@@ -155,6 +155,66 @@ export class NurseriesController {
     return this.nurseriesService.getAssignedGardeners(req.user.id);
   }
 
+  @Post("my-nursery/gardeners")
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.VENDOR)
+  @ApiBearerAuth("bearer")
+  @HttpCode(HttpStatus.CREATED)
+  @ApiOperation({ summary: "Create staff gardener account (MISS-13)" })
+  async createStaffGardener(@Request() req, @Body() body: Record<string, unknown>) {
+    return this.nurseriesService.createStaffGardener(req.user.id, body);
+  }
+
+  @Get("my-nursery/gardeners/:gardener_id")
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.VENDOR)
+  @ApiBearerAuth("bearer")
+  @ApiOperation({ summary: "Staff gardener profile (MISS-14)" })
+  @ApiParam({ name: "gardener_id" })
+  async getStaffGardener(@Request() req, @Param("gardener_id") gardenerId: string) {
+    return this.nurseriesService.getStaffGardenerDetail(req.user.id, gardenerId);
+  }
+
+  @Put("my-nursery/gardeners/:gardener_id")
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.VENDOR)
+  @ApiBearerAuth("bearer")
+  @ApiOperation({ summary: "Update staff gardener (MISS-15)" })
+  @ApiParam({ name: "gardener_id" })
+  async updateStaffGardener(
+    @Request() req,
+    @Param("gardener_id") gardenerId: string,
+    @Body() body: Record<string, unknown>
+  ) {
+    return this.nurseriesService.updateStaffGardener(req.user.id, gardenerId, body);
+  }
+
+  @Post("my-nursery/gardeners/:gardener_id/reset-credentials")
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.VENDOR)
+  @ApiBearerAuth("bearer")
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: "Reset staff credentials (MISS-16)" })
+  @ApiParam({ name: "gardener_id" })
+  async resetStaffCredentials(@Request() req, @Param("gardener_id") gardenerId: string) {
+    return this.nurseriesService.resetStaffCredentials(req.user.id, gardenerId);
+  }
+
+  @Post("my-nursery/gardeners/:gardener_id/status")
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.VENDOR)
+  @ApiBearerAuth("bearer")
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: "Activate/deactivate staff (MOD-07)" })
+  @ApiParam({ name: "gardener_id" })
+  async setStaffGardenerStatus(
+    @Request() req,
+    @Param("gardener_id") gardenerId: string,
+    @Body() body: { is_active: boolean; reason?: string }
+  ) {
+    return this.nurseriesService.setStaffGardenerStatus(req.user.id, gardenerId, body);
+  }
+
   // Changed: now sends invitation instead of direct assign
   @Post("my-nursery/gardeners/:gardener_id/invite")
   @UseGuards(JwtAuthGuard, RolesGuard)

@@ -787,4 +787,101 @@ export class AdminService {
     await this.prisma.gardenerSkill.delete({ where: { id: skillId } });
     return { success: true };
   }
+
+  // --- Contract v3.1: manual intervention (MISS-19 / MISS-20) ---
+
+  async listManualOrders(q: { status?: string; priority?: string; page?: string; limit?: string }) {
+    const page = Math.max(1, parseInt(q.page || "1", 10) || 1);
+    const limit = Math.min(100, Math.max(1, parseInt(q.limit || "20", 10) || 20));
+    const where: Prisma.ManualInterventionOrderWhereInput = {};
+    if (q.status) where.status = q.status as "OPEN" | "RESOLVED";
+    if (q.priority) where.priority = q.priority;
+    const [rows, total] = await this.prisma.$transaction([
+      this.prisma.manualInterventionOrder.findMany({
+        where,
+        skip: (page - 1) * limit,
+        take: limit,
+        orderBy: { createdAt: "desc" },
+        include: { order: { select: { orderNumber: true, status: true } } },
+      }),
+      this.prisma.manualInterventionOrder.count({ where }),
+    ]);
+    return {
+      success: true,
+      data: {
+        items: rows.map((r) => ({
+          id: r.id,
+          order_id: r.orderId,
+          order_number: r.order.orderNumber,
+          status: r.status,
+          priority: r.priority,
+          reason: r.reason,
+        })),
+        pagination: { page, limit, total, total_pages: Math.ceil(total / limit) || 1 },
+      },
+    };
+  }
+
+  async resolveManualOrder(orderId: string, body: { action: string; note?: string }) {
+    const row = await this.prisma.manualInterventionOrder.findUnique({ where: { orderId } });
+    if (!row) throw new NotFoundException("No manual case for this order");
+    if (!["REASSIGN", "CANCEL", "FORCE_APPROVE"].includes(body.action)) {
+      throw new BadRequestException("Invalid action");
+    }
+    await this.prisma.manualInterventionOrder.update({
+      where: { id: row.id },
+      data: {
+        status: "RESOLVED",
+        resolutionNote: body.note,
+        resolvedAt: new Date(),
+      },
+    });
+    return { success: true, data: { order_id: orderId, action: body.action } };
+  }
+
+  async getFreelanceMatchConfig() {
+    const c = await this.prisma.freelanceMatchConfig.findUnique({ where: { id: "singleton" } });
+    if (!c) throw new NotFoundException("config");
+    return {
+      success: true,
+      data: {
+        auto_match_enabled: c.autoMatchEnabled,
+        auto_match_score_threshold: Number(c.autoMatchScoreThreshold),
+        gardener_accept_window_minutes: c.gardenerAcceptWindowMinutes,
+      },
+    };
+  }
+
+  async setFreelanceMatchConfig(body: {
+    auto_match_enabled?: boolean;
+    auto_match_score_threshold?: number;
+    gardener_accept_window_minutes?: number;
+  }) {
+    const c = await this.prisma.freelanceMatchConfig.upsert({
+      where: { id: "singleton" },
+      create: {
+        id: "singleton",
+        autoMatchEnabled: body.auto_match_enabled ?? false,
+        autoMatchScoreThreshold: body.auto_match_score_threshold ?? 0.8,
+        gardenerAcceptWindowMinutes: body.gardener_accept_window_minutes ?? 30,
+      },
+      update: {
+        ...(body.auto_match_enabled !== undefined && { autoMatchEnabled: body.auto_match_enabled }),
+        ...(body.auto_match_score_threshold !== undefined && {
+          autoMatchScoreThreshold: body.auto_match_score_threshold,
+        }),
+        ...(body.gardener_accept_window_minutes !== undefined && {
+          gardenerAcceptWindowMinutes: body.gardener_accept_window_minutes,
+        }),
+      },
+    });
+    return {
+      success: true,
+      data: {
+        auto_match_enabled: c.autoMatchEnabled,
+        auto_match_score_threshold: Number(c.autoMatchScoreThreshold),
+        gardener_accept_window_minutes: c.gardenerAcceptWindowMinutes,
+      },
+    };
+  }
 }

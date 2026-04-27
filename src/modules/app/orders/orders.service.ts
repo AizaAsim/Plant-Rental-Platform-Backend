@@ -1166,6 +1166,16 @@ export class OrdersService {
       data: tasks,
     });
 
+    if (Array.isArray(assignDto?.delivery_slots) && assignDto.delivery_slots.length) {
+      const o = await this.prisma.order.findUnique({ where: { id: orderId }, select: { workflowMeta: true } });
+      const meta = (o?.workflowMeta as Record<string, unknown>) ?? {};
+      meta.assignGardener = { delivery_slots: assignDto.delivery_slots, gardener_id, order_item_id };
+      await this.prisma.order.update({
+        where: { id: orderId },
+        data: { workflowMeta: meta as object },
+      });
+    }
+
     return {
       message: "Gardener assigned and maintenance schedule created",
       tasks_created: tasks.length,
@@ -1268,6 +1278,11 @@ export class OrdersService {
 
     const { page = 1, limit = 20, status } = filterDto;
 
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const tomorrow = new Date(today);
+    tomorrow.setDate(tomorrow.getDate() + 1);
+
     const where: Prisma.OrderItemWhereInput = {
       order: {
         nurseryId: nursery.id,
@@ -1279,6 +1294,12 @@ export class OrdersService {
       ...(status === "OVERDUE" && {
         rentEndDate: {
           lt: new Date(),
+        },
+      }),
+      ...(status === "DUE_TODAY" && {
+        rentEndDate: {
+          gte: today,
+          lt: tomorrow,
         },
       }),
     };
@@ -1470,7 +1491,16 @@ export class OrdersService {
   }
 
   /** POST /api/v1/orders/vendor/orders/:order_id/complete-delivery */
-  async vendorCompleteDelivery(vendorId: string, orderId: string) {
+  async vendorCompleteDelivery(
+    vendorId: string,
+    orderId: string,
+    handover?: {
+      actual_start_date?: string;
+      actual_start_time?: string;
+      delivery_notes?: string;
+      proof_image_urls?: string[];
+    }
+  ) {
     const { order } = await this.requireVendorOrder(vendorId, orderId);
     if (
       order.status !== OrderStatus.PROCESSING &&
@@ -1481,8 +1511,23 @@ export class OrdersService {
       );
     }
     const now = new Date();
+    const prevMeta =
+      order.workflowMeta && typeof order.workflowMeta === "object"
+        ? (order.workflowMeta as Record<string, unknown>)
+        : {};
 
     await this.prisma.$transaction(async (tx) => {
+      if (handover && Object.keys(handover).length) {
+        await tx.order.update({
+          where: { id: orderId },
+          data: {
+            workflowMeta: {
+              ...prevMeta,
+              deliveryCompletion: handover,
+            } as object,
+          },
+        });
+      }
       for (const item of order.items) {
         if (item.orderType !== OrderType.RENT) continue;
         let days = 30;

@@ -29,8 +29,13 @@ import { AnalyticsModule } from "./modules/app/analytics/analytics.module";
 import { ReviewsDisputesModule } from "./modules/app/reviews-disputes/reviews-disputes.module";
 import { AiModule } from "./modules/app/ai/ai.module";
 import { PreferencesModule } from "./modules/app/preferences/preferences.module";
+import { ContractCommonModule } from "./common/contract/contract-common.module";
+import { VendorPackagesModule } from "./modules/app/vendor-packages/vendor-packages.module";
+import { FreelanceJobsModule } from "./modules/app/freelance-jobs/freelance-jobs.module";
+import { InternalJobsModule } from "./modules/app/internal-jobs/internal-jobs.module";
 @Module({
   imports: [
+    ContractCommonModule,
     EventEmitterModule.forRoot(),
     RedisModule,
     DatabaseModule,
@@ -52,6 +57,9 @@ import { PreferencesModule } from "./modules/app/preferences/preferences.module"
     AnalyticsModule,
     ReviewsDisputesModule,
     PreferencesModule,
+    VendorPackagesModule,
+    FreelanceJobsModule,
+    InternalJobsModule,
     AiModule,
     CronModule,
     QueueModule,

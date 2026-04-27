@@ -1,10 +1,15 @@
 // src/modules/app/nurseries/nurseries.service.ts
 import {
+  HttpStatus,
   Injectable,
   NotFoundException,
   ConflictException,
   BadRequestException,
 } from "@nestjs/common";
+import * as bcrypt from "bcrypt";
+import { UserRole } from "@prisma/client";
+import { contractOk, contractFail } from "src/common/contract/response";
+import { ContractErrorCode } from "src/common/contract/error-codes";
 import { NurseryFilterDto } from "./dto/nursery-filter.dto";
 import {
   UpdateInventoryDto,
@@ -623,5 +628,157 @@ export class NurseriesService {
       hasNext: page < Math.ceil(total / limit),
       hasPrevious: page > 1,
     };
+  }
+
+  // --- Contract v3.1: vendor-created staff (MISS-13 / MISS-15 / MOD-07) ---
+
+  async createStaffGardener(vendorId: string, body: Record<string, unknown>) {
+    const nursery = await this.prisma.nursery.findUnique({ where: { vendorId } });
+    if (!nursery) throw new NotFoundException("Nursery not found");
+    const email = String(body.email ?? "").toLowerCase().trim();
+    const phone = String(body.phone ?? "").trim();
+    if (!email || !phone) {
+      throw new BadRequestException("email and phone are required");
+    }
+    const tempPass = `Temp@${Math.random().toString(36).slice(2, 6)}1Aa!`;
+    const hashed = await bcrypt.hash(tempPass, 10);
+    const taken = await this.prisma.user.findFirst({ where: { OR: [{ email }, { phone }] } });
+    if (taken) {
+      throw contractFail(ContractErrorCode.CONFLICT, "Email or phone already in use", HttpStatus.CONFLICT);
+    }
+    const user = await this.prisma.user.create({
+      data: {
+        email,
+        passwordHash: hashed,
+        fullName: String(body.full_name ?? "Staff"),
+        phone,
+        role: UserRole.GARDENER,
+        isVerified: true,
+        mustChangePassword: true,
+        registerMeta: { staff_onboard: "vendor", vendor_id: vendorId, role: body.role } as object,
+      },
+    });
+    const g = await this.prisma.gardener.create({
+      data: {
+        userId: user.id,
+        nurseryId: nursery.id,
+        isFreelancer: false,
+        staffRole: body.role != null ? String(body.role) : "GARDENER_STAFF",
+        staffNotes: body.notes != null ? String(body.notes) : null,
+      },
+    });
+    return contractOk({
+      gardener_id: g.id,
+      email: user.email,
+      temporary_password: tempPass,
+      must_change_password: true,
+    });
+  }
+
+  async getStaffGardenerDetail(vendorId: string, gardenerId: string) {
+    const nursery = await this.prisma.nursery.findUnique({ where: { vendorId } });
+    if (!nursery) throw new NotFoundException("Nursery not found");
+    const g = await this.prisma.gardener.findFirst({
+      where: { id: gardenerId, nurseryId: nursery.id },
+      include: { user: { select: { email: true, fullName: true, phone: true, isActive: true } } },
+    });
+    if (!g) {
+      throw contractFail(ContractErrorCode.RESOURCE_NOT_FOUND, "Gardener not found", HttpStatus.NOT_FOUND);
+    }
+    return contractOk({
+      gardener_id: g.id,
+      email: g.user.email,
+      full_name: g.user.fullName,
+      phone: g.user.phone,
+      is_active: g.isAvailable && g.user.isActive,
+      role: g.staffRole,
+      notes: g.staffNotes,
+      created_at: g.createdAt,
+      deactivated_at: g.deactivatedAt,
+    });
+  }
+
+  async updateStaffGardener(vendorId: string, gardenerId: string, body: Record<string, unknown>) {
+    const nursery = await this.prisma.nursery.findUnique({ where: { vendorId } });
+    if (!nursery) throw new NotFoundException("Nursery not found");
+    const g = await this.prisma.gardener.findFirst({
+      where: { id: gardenerId, nurseryId: nursery.id },
+      include: { user: true },
+    });
+    if (!g) {
+      throw contractFail(ContractErrorCode.RESOURCE_NOT_FOUND, "Gardener not found", HttpStatus.NOT_FOUND);
+    }
+    await this.prisma.user.update({
+      where: { id: g.userId },
+      data: {
+        ...(body.full_name != null && { fullName: String(body.full_name) }),
+        ...(body.phone != null && { phone: String(body.phone) }),
+        ...(body.email != null && { email: String(body.email).toLowerCase() }),
+      },
+    });
+    const addr = body.address as Record<string, string> | undefined;
+    const updated = await this.prisma.gardener.update({
+      where: { id: g.id },
+      data: {
+        ...(body.notes != null && { staffNotes: String(body.notes) }),
+        ...(body.role != null && { staffRole: String(body.role) }),
+        ...(addr && {
+          bio: [addr.street, addr.area, addr.city].filter(Boolean).join(", "),
+        }),
+      },
+    });
+    return contractOk({ gardener_id: updated.id, updated: true });
+  }
+
+  async resetStaffCredentials(vendorId: string, gardenerId: string) {
+    const nursery = await this.prisma.nursery.findUnique({ where: { vendorId } });
+    if (!nursery) throw new NotFoundException("Nursery not found");
+    const g = await this.prisma.gardener.findFirst({
+      where: { id: gardenerId, nurseryId: nursery.id },
+    });
+    if (!g) {
+      throw contractFail(ContractErrorCode.RESOURCE_NOT_FOUND, "Gardener not found", HttpStatus.NOT_FOUND);
+    }
+    const tempPass = `Reset@${Math.random().toString(36).slice(2, 6)}1Bb!`;
+    const hashed = await bcrypt.hash(tempPass, 10);
+    const u = await this.prisma.user.update({
+      where: { id: g.userId },
+      data: { passwordHash: hashed, mustChangePassword: true },
+    });
+    return contractOk({
+      gardener_id: g.id,
+      email: u.email,
+      temporary_password: tempPass,
+      must_change_password: true,
+    });
+  }
+
+  async setStaffGardenerStatus(
+    vendorId: string,
+    gardenerId: string,
+    body: { is_active: boolean; reason?: string }
+  ) {
+    const nursery = await this.prisma.nursery.findUnique({ where: { vendorId } });
+    if (!nursery) throw new NotFoundException("Nursery not found");
+    const g = await this.prisma.gardener.findFirst({
+      where: { id: gardenerId, nurseryId: nursery.id },
+    });
+    if (!g) {
+      throw contractFail(ContractErrorCode.RESOURCE_NOT_FOUND, "Gardener not found", HttpStatus.NOT_FOUND);
+    }
+    const active = body.is_active;
+    await this.prisma.gardener.update({
+      where: { id: g.id },
+      data: {
+        isAvailable: active,
+        deactivatedAt: active ? null : new Date(),
+        deactivateReason: active ? null : (body.reason ?? "deactivated") as string,
+      },
+    });
+    await this.prisma.user.update({
+      where: { id: g.userId },
+      data: { isActive: active },
+    });
+    return contractOk({ gardener_id: g.id, is_active: active });
   }
 }

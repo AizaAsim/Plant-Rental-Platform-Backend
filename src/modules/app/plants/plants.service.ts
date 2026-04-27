@@ -4,6 +4,9 @@ import {
   BadRequestException,
   ConflictException,
 } from "@nestjs/common";
+import { validate } from "class-validator";
+import { instanceToPlain, plainToInstance } from "class-transformer";
+import type { PlantImage } from "@prisma/client";
 import {
   Prisma,
   MaintenanceLevel,
@@ -17,10 +20,17 @@ import {
 } from "@prisma/client";
 import { PrismaService } from "src/prisma/prisma.service";
 import { Decimal } from "@prisma/client/runtime/library";
+import { MediaService } from "../media/media.service";
+import { UpdatePlantDto, UpdateStockDto } from "./dto/plant-body.dto";
+
+type UploadFileMeta = { buffer: Buffer; mimetype: string; size: number };
 
 @Injectable()
 export class PlantsService {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private media: MediaService
+  ) {}
 
   // ─── Helpers ──────────────────────────────────────────────────────────────
 
@@ -849,6 +859,132 @@ export class PlantsService {
       where: { id: plantId },
       data: { stockQuantity: newStock },
     });
+  }
+
+  // ─── PATCH (multipart) — local disk via MediaService (no S3 required) ─────
+
+  private async assertVendorOwnsPlant(vendorId: string, plantId: string) {
+    const nursery = await this.prisma.nursery.findUnique({ where: { vendorId } });
+    if (!nursery) throw new NotFoundException("Nursery not found");
+    const plant = await this.prisma.plant.findFirst({
+      where: { id: plantId, nurseryId: nursery.id },
+    });
+    if (!plant) throw new NotFoundException("Plant not found");
+  }
+
+  async attachLocalImagesToPlant(
+    vendorId: string,
+    plantId: string,
+    files: UploadFileMeta[]
+  ) {
+    if (!files.length) {
+      return [];
+    }
+    await this.assertVendorOwnsPlant(vendorId, plantId);
+
+    const [existingCount, lastOrder] = await Promise.all([
+      this.prisma.plantImage.count({ where: { plantId } }),
+      this.prisma.plantImage.findFirst({
+        where: { plantId },
+        orderBy: { displayOrder: "desc" },
+        select: { displayOrder: true },
+      }),
+    ]);
+    const base = (lastOrder?.displayOrder ?? 0) + 1;
+    const created: PlantImage[] = [];
+    for (let i = 0; i < files.length; i++) {
+      const f = files[i];
+      if (!f.mimetype?.toLowerCase().startsWith("image/")) {
+        throw new BadRequestException("Only image files are allowed");
+      }
+      const { url } = await this.media.uploadFile(vendorId, f, "plants", undefined);
+      created.push(
+        await this.prisma.plantImage.create({
+          data: {
+            plantId,
+            imageUrl: url,
+            isPrimary: existingCount === 0 && i === 0,
+            displayOrder: base + i,
+          },
+        })
+      );
+    }
+    return created;
+  }
+
+  async patchVendorPlantWithImages(
+    vendorId: string,
+    plantId: string,
+    dataJson: string | undefined,
+    files: UploadFileMeta[] | undefined
+  ) {
+    const hasFiles = (files?.length ?? 0) > 0;
+    let raw: Record<string, unknown> = {};
+    if (dataJson != null && String(dataJson).trim() !== "") {
+      try {
+        raw = JSON.parse(String(dataJson)) as Record<string, unknown>;
+      } catch {
+        throw new BadRequestException("data must be valid JSON when provided");
+      }
+    }
+    if (Object.keys(raw).length === 0 && !hasFiles) {
+      throw new BadRequestException("Provide data (JSON string) and/or image files as images");
+    }
+    if (Object.keys(raw).length > 0) {
+      const { adjustment, ...rest } = raw as { adjustment?: number } & Record<string, unknown>;
+      if (adjustment !== undefined) {
+        if (typeof adjustment !== "number" || !Number.isFinite(adjustment)) {
+          throw new BadRequestException("adjustment must be a number when provided in data");
+        }
+        await this.updateStock(vendorId, plantId, { adjustment });
+      }
+      if (Object.keys(rest).length > 0) {
+        const dto = plainToInstance(UpdatePlantDto, rest, { enableImplicitConversion: true });
+        const err = await validate(dto, { whitelist: true, forbidNonWhitelisted: true });
+        if (err.length) {
+          const parts = err.flatMap((e) => (e.constraints ? Object.values(e.constraints) : []));
+          throw new BadRequestException(parts.length ? parts.join(", ") : "Invalid plant data");
+        }
+        await this.updatePlant(vendorId, plantId, instanceToPlain(dto));
+      }
+    }
+    if (hasFiles) {
+      await this.attachLocalImagesToPlant(vendorId, plantId, files!);
+    }
+    return this.getVendorPlant(vendorId, plantId);
+  }
+
+  async patchVendorStockWithImages(
+    vendorId: string,
+    plantId: string,
+    dataJson: string | undefined,
+    files: UploadFileMeta[] | undefined
+  ) {
+    const hasFiles = (files?.length ?? 0) > 0;
+    let raw: Record<string, unknown> = {};
+    if (dataJson != null && String(dataJson).trim() !== "") {
+      try {
+        raw = JSON.parse(String(dataJson)) as Record<string, unknown>;
+      } catch {
+        throw new BadRequestException("data must be valid JSON when provided");
+      }
+    }
+    if (Object.keys(raw).length === 0 && !hasFiles) {
+      throw new BadRequestException("Provide data (JSON) with stock update and/or image files as images");
+    }
+    if (Object.keys(raw).length > 0) {
+      const dto = plainToInstance(UpdateStockDto, raw, { enableImplicitConversion: true });
+      const err = await validate(dto, { whitelist: true, forbidNonWhitelisted: true });
+      if (err.length) {
+        const parts = err.flatMap((e) => (e.constraints ? Object.values(e.constraints) : []));
+        throw new BadRequestException(parts.length ? parts.join(", ") : "Invalid stock data");
+      }
+      await this.updateStock(vendorId, plantId, instanceToPlain(dto));
+    }
+    if (hasFiles) {
+      await this.attachLocalImagesToPlant(vendorId, plantId, files!);
+    }
+    return this.getVendorPlant(vendorId, plantId);
   }
 
   // ─── POST /api/v1/plants/vendor/plants/:plant_id/images ──────────────────

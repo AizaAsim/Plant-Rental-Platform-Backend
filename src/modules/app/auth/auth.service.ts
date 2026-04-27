@@ -51,6 +51,7 @@ export class AuthService {
       is_corporate,
       company_name,
       gst_number,
+      gardener_type,
     } = registerDto;
 
     try {
@@ -91,6 +92,7 @@ export class AuthService {
           isCorporate: is_corporate || false,
           companyName: company_name,
           gstNumber: gst_number,
+          registerMeta: gardener_type ? { gardener_type } : undefined,
           // isVerified: false,
           isVerified: true,
         },

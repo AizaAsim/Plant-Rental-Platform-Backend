@@ -46,7 +46,8 @@ export class PaymentsController {
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: "Verify payment after gateway callback (mock)" })
   async verify(@Request() req, @Body() body: any) {
-    return this.paymentsService.verify(req.user.id, body);
+    const key = (req.headers["idempotency-key"] || req.headers["Idempotency-Key"]) as string | undefined;
+    return this.paymentsService.verify(req.user.id, body, key);
   }
 
   @Post("webhook")

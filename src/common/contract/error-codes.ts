@@ -1,0 +1,13 @@
+/** API contract v3.1 — error.code values */
+export const ContractErrorCode = {
+  SLOT_EXPIRED: "SLOT_EXPIRED",
+  INVALID_STATE_TRANSITION: "INVALID_STATE_TRANSITION",
+  STOCK_UNAVAILABLE: "STOCK_UNAVAILABLE",
+  PAYMENT_WINDOW_EXPIRED: "PAYMENT_WINDOW_EXPIRED",
+  UNAUTHORIZED_ACTION: "UNAUTHORIZED_ACTION",
+  RESOURCE_NOT_FOUND: "RESOURCE_NOT_FOUND",
+  CONFLICT: "CONFLICT",
+  VALIDATION_ERROR: "VALIDATION_ERROR",
+} as const;
+
+export type ContractErrorCodeType = (typeof ContractErrorCode)[keyof typeof ContractErrorCode];

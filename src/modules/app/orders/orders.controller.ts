@@ -21,6 +21,7 @@ import {
   ApiBearerAuth,
 } from "@nestjs/swagger";
 import { OrdersService } from "./orders.service";
+import { OrderContractFlowService } from "./order-contract-flow.service";
 import { JwtAuthGuard } from "../auth/guard/jwt-auth.guard";
 import { RolesGuard } from "../auth/guard/roles.guard";
 import { Roles } from "../auth/decorators/roles.decorator";
@@ -29,7 +30,10 @@ import { UserRole } from "@prisma/client";
 @ApiTags("Orders")
 @Controller("api/v1/orders")
 export class OrdersController {
-  constructor(private readonly ordersService: OrdersService) {}
+  constructor(
+    private readonly ordersService: OrdersService,
+    private readonly orderContractFlow: OrderContractFlowService
+  ) {}
 
   @Post("checkout")
   @UseGuards(JwtAuthGuard, RolesGuard)
@@ -73,6 +77,55 @@ export class OrdersController {
   @ApiResponse({ status: 200, description: "Active rentals retrieved" })
   async getCustomerActiveRentals(@Request() req) {
     return this.ordersService.getCustomerActiveRentals(req.user.id);
+  }
+
+  // --- Contract v3.1: delivery / return / penalty (user) ---
+  @Post(":order_id/customer-delivery-response")
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.USER)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: "Customer confirms or requests different delivery slot (MISS-03)" })
+  async customerDeliveryResponse(
+    @Request() req,
+    @Param("order_id") orderId: string,
+    @Body() body: Record<string, unknown>
+  ) {
+    return this.orderContractFlow.customerDeliveryResponse(req.user.id, orderId, body);
+  }
+
+  @Post(":order_id/customer-return-response")
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.USER)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: "Customer return pickup response (MISS-22)" })
+  async customerReturnResponse(
+    @Request() req,
+    @Param("order_id") orderId: string,
+    @Body() body: Record<string, unknown>
+  ) {
+    return this.orderContractFlow.customerReturnResponse(req.user.id, orderId, body);
+  }
+
+  @Get(":order_id/penalty")
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.USER)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: "Penalty summary (MISS-09)" })
+  async getOrderPenalty(@Request() req, @Param("order_id") orderId: string) {
+    return this.orderContractFlow.getPenalty(req.user.id, orderId);
+  }
+
+  @Post(":order_id/finalize-penalty")
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.USER)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: "Finalize penalty on collection (MISS-10)" })
+  async finalizePenalty(
+    @Request() req,
+    @Param("order_id") orderId: string,
+    @Body() body: Record<string, unknown>
+  ) {
+    return this.orderContractFlow.finalizePenalty(req.user.id, orderId, body);
   }
 
   @Get(":order_id")
@@ -253,6 +306,51 @@ export class OrdersController {
     return this.ordersService.vendorProcessOrder(req.user.id, orderId);
   }
 
+  @Post("vendor/orders/:order_id/propose-delivery-slots")
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.VENDOR)
+  @ApiBearerAuth()
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: "Propose delivery slots (MOD-02)" })
+  @ApiParam({ name: "order_id" })
+  async vendorProposeDeliverySlots(
+    @Request() req,
+    @Param("order_id") orderId: string,
+    @Body() body: Record<string, unknown>
+  ) {
+    return this.orderContractFlow.vendorProposeDeliverySlots(req.user.id, orderId, body);
+  }
+
+  @Post("vendor/orders/:order_id/initiate-return")
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.VENDOR)
+  @ApiBearerAuth()
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: "Vendor initiate return pickup (MISS-17)" })
+  @ApiParam({ name: "order_id" })
+  async vendorInitiateReturn(
+    @Request() req,
+    @Param("order_id") orderId: string,
+    @Body() body: Record<string, unknown>
+  ) {
+    return this.orderContractFlow.vendorInitiateReturn(req.user.id, orderId, body);
+  }
+
+  @Post("vendor/orders/:order_id/complete-return")
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.VENDOR)
+  @ApiBearerAuth()
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: "Complete return with per-item condition (MISS-18)" })
+  @ApiParam({ name: "order_id" })
+  async vendorCompleteReturn(
+    @Request() req,
+    @Param("order_id") orderId: string,
+    @Body() body: Record<string, unknown>
+  ) {
+    return this.orderContractFlow.vendorCompleteReturn(req.user.id, orderId, body);
+  }
+
   @Post("vendor/orders/:order_id/complete-delivery")
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(UserRole.VENDOR)
@@ -260,8 +358,12 @@ export class OrdersController {
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: "Complete delivery — activate rental clock" })
   @ApiParam({ name: "order_id" })
-  async vendorCompleteDelivery(@Request() req, @Param("order_id") orderId: string) {
-    return this.ordersService.vendorCompleteDelivery(req.user.id, orderId);
+  async vendorCompleteDelivery(
+    @Request() req,
+    @Param("order_id") orderId: string,
+    @Body() body?: Record<string, unknown>
+  ) {
+    return this.ordersService.vendorCompleteDelivery(req.user.id, orderId, body);
   }
 
   @Put("vendor/orders/:order_id/status")
@@ -327,7 +429,7 @@ export class OrdersController {
   @ApiOperation({ summary: "Get active rentals" })
   @ApiQuery({ name: "page", required: false, type: Number })
   @ApiQuery({ name: "limit", required: false, type: Number })
-  @ApiQuery({ name: "status", required: false, enum: ["ACTIVE", "OVERDUE"] })
+  @ApiQuery({ name: "status", required: false, enum: ["ACTIVE", "OVERDUE", "DUE_TODAY"] })
   @ApiResponse({
     status: 200,
     description: "Active rentals retrieved successfully",

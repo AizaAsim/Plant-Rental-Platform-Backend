@@ -1,11 +1,14 @@
 import {
-  Controller, Get, Post, Put, Delete,
+  BadRequestException,
+  Controller, Get, Post, Put, Patch, Delete,
   Query, Param, Body, UseGuards, Request,
   HttpCode, HttpStatus,
+  UseInterceptors, UploadedFiles,
 } from "@nestjs/common";
+import { FilesInterceptor } from "@nestjs/platform-express";
 import {
   ApiTags, ApiOperation, ApiResponse,
-  ApiParam, ApiQuery, ApiBearerAuth,
+  ApiParam, ApiQuery, ApiBearerAuth, ApiBody, ApiConsumes,
 } from "@nestjs/swagger";
 import { PlantsService } from "./plants.service";
 import { JwtAuthGuard } from "../auth/guard/jwt-auth.guard";
@@ -23,6 +26,20 @@ import {
   CreateReviewDto,
 } from "./dto/plant-body.dto";
 import { PlantListResponseDto, PlantResponseDto, CategoryResponseDto } from "./dto/plant-response.dto";
+
+const plantsImageMulter = {
+  limits: { fileSize: 15 * 1024 * 1024 },
+  fileFilter: (
+    _req: import("express").Request,
+    file: { mimetype: string },
+    cb: (error: Error | null, acceptFile: boolean) => void
+  ) => {
+    if (!file.mimetype?.startsWith("image/")) {
+      return cb(new BadRequestException("Only image files are allowed"), false);
+    }
+    cb(null, true);
+  },
+};
 
 @ApiTags("Plants")
 @Controller("api/v1/plants")
@@ -163,6 +180,44 @@ export class PlantsController {
     return this.plantsService.updatePlant(req.user.id, plantId, updateDto);
   }
 
+  @Patch("vendor/plants/:plant_id")
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.VENDOR)
+  @ApiBearerAuth("bearer")
+  @UseInterceptors(FilesInterceptor("images", 20, plantsImageMulter))
+  @ApiConsumes("multipart/form-data")
+  @ApiBody({
+    schema: {
+      type: "object",
+      properties: {
+        data: {
+          type: "string",
+          description:
+            "JSON string: UpdatePlant fields (snake_case). Optional key adjustment (number) for relative stock. Omit or use {} to only upload files.",
+        },
+        images: { type: "array", items: { type: "string", format: "binary" } },
+      },
+    },
+  })
+  @ApiOperation({
+    summary: "Update plant and/or stock (optionally) and upload new images (local storage)",
+  })
+  @ApiParam({ name: "plant_id", description: "Plant ID" })
+  @ApiResponse({ status: 200, description: "Plant details after update" })
+  async patchVendorPlantMultipart(
+    @Request() req,
+    @Param("plant_id") plantId: string,
+    @Body() body: { data?: string },
+    @UploadedFiles() files: { buffer: Buffer; mimetype: string; size: number }[] | undefined
+  ) {
+    return this.plantsService.patchVendorPlantWithImages(
+      req.user.id,
+      plantId,
+      body?.data,
+      files
+    );
+  }
+
   @Delete("vendor/plants/:plant_id")
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(UserRole.VENDOR)
@@ -188,6 +243,74 @@ export class PlantsController {
     @Body() stockDto: UpdateStockDto
   ) {
     return this.plantsService.updateStock(req.user.id, plantId, stockDto);
+  }
+
+  @Patch("vendor/plants/:plant_id/stock")
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.VENDOR)
+  @ApiBearerAuth("bearer")
+  @UseInterceptors(FilesInterceptor("images", 20, plantsImageMulter))
+  @ApiConsumes("multipart/form-data")
+  @ApiBody({
+    schema: {
+      type: "object",
+      properties: {
+        data: {
+          type: "string",
+          description:
+            "JSON string: stock_quantity and/or adjustment (UpdateStock). Omit to only attach images via upload.",
+        },
+        images: { type: "array", items: { type: "string", format: "binary" } },
+      },
+    },
+  })
+  @ApiOperation({
+    summary: "Update stock and optionally upload and attach new images (local storage)",
+  })
+  @ApiParam({ name: "plant_id", description: "Plant ID" })
+  @ApiResponse({ status: 200, description: "Plant details after update" })
+  async patchVendorStockMultipart(
+    @Request() req,
+    @Param("plant_id") plantId: string,
+    @Body() body: { data?: string },
+    @UploadedFiles() files: { buffer: Buffer; mimetype: string; size: number }[] | undefined
+  ) {
+    return this.plantsService.patchVendorStockWithImages(
+      req.user.id,
+      plantId,
+      body?.data,
+      files
+    );
+  }
+
+  @Post("vendor/plants/:plant_id/images/upload")
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.VENDOR)
+  @ApiBearerAuth("bearer")
+  @HttpCode(HttpStatus.CREATED)
+  @UseInterceptors(FilesInterceptor("images", 20, plantsImageMulter))
+  @ApiConsumes("multipart/form-data")
+  @ApiBody({
+    schema: {
+      type: "object",
+      required: ["images"],
+      properties: { images: { type: "array", items: { type: "string", format: "binary" } } },
+    },
+  })
+  @ApiOperation({
+    summary: "Upload image files to local storage and attach to plant (no S3; files saved under /uploads/plants/…)",
+  })
+  @ApiParam({ name: "plant_id", description: "Plant ID" })
+  @ApiResponse({ status: 201, description: "Created PlantImage records" })
+  async uploadVendorPlantImageFiles(
+    @Request() req,
+    @Param("plant_id") plantId: string,
+    @UploadedFiles() files: { buffer: Buffer; mimetype: string; size: number }[] | undefined
+  ) {
+    if (!files?.length) {
+      throw new BadRequestException("At least one file is required under the images field");
+    }
+    return this.plantsService.attachLocalImagesToPlant(req.user.id, plantId, files);
   }
 
   @Post("vendor/plants/:plant_id/images")
