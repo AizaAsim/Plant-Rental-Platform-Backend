@@ -2,7 +2,7 @@ module.exports = {
   apps: [
     {
       name: (process.env.ENV_STR ? process.env.ENV_STR + '-' : '') + 'server',
-      script: './dist/main.js',
+      script: './dist/src/main.js',
       watch: false,
       // cwd:"",
       args: '',

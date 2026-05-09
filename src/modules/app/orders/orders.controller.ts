@@ -93,6 +93,22 @@ export class OrdersController {
     return this.orderContractFlow.customerDeliveryResponse(req.user.id, orderId, body);
   }
 
+  /** Phase 06: canonical path — same handler as vendor/orders/.../propose-delivery-slots */
+  @Post(":order_id/propose-delivery-slots")
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.VENDOR)
+  @ApiBearerAuth()
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: "Vendor proposes delivery slots (stored in workflowMeta, status SLOT_PROPOSED)" })
+  @ApiParam({ name: "order_id" })
+  async vendorProposeDeliverySlotsByOrderId(
+    @Request() req,
+    @Param("order_id") orderId: string,
+    @Body() body: Record<string, unknown>
+  ) {
+    return this.orderContractFlow.vendorProposeDeliverySlots(req.user.id, orderId, body);
+  }
+
   @Post(":order_id/customer-return-response")
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(UserRole.USER)

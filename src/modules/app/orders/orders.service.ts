@@ -604,7 +604,7 @@ export class OrdersService {
       throw new NotFoundException("Order not found");
     }
 
-    if (!["PENDING", "CONFIRMED"].includes(order.status)) {
+    if (!["PENDING", "CONFIRMED", "SLOT_PROPOSED"].includes(order.status)) {
       throw new BadRequestException("Order cannot be cancelled at this stage");
     }
 
@@ -958,6 +958,7 @@ export class OrdersService {
     const validTransitions: Record<OrderStatus, OrderStatus[]> = {
       PENDING: [OrderStatus.CONFIRMED, OrderStatus.CANCELLED],
       CONFIRMED: [OrderStatus.PROCESSING, OrderStatus.CANCELLED],
+      SLOT_PROPOSED: [OrderStatus.CANCELLED],
       PROCESSING: [OrderStatus.OUT_FOR_DELIVERY],
       OUT_FOR_DELIVERY: [OrderStatus.DELIVERED],
       DELIVERED: [OrderStatus.COMPLETED],

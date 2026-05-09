@@ -13,7 +13,7 @@
     "start": "nest start",
     "start:dev": "nest start --watch && npm run postbuild",
     "start:debug": "nest start --debug --watch",
-    "start:prod": "node dist/main",
+    "start:prod": "node dist/src/main.js",
     "db:migrate": "npx prisma migrate dev",
     "db:generate": "npx prisma generate",
     "db:deploy": "npx prisma migrate deploy",

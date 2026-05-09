@@ -55,6 +55,7 @@ enum OrderType {
 enum OrderStatus {
   PENDING
   CONFIRMED
+  SLOT_PROPOSED
   PROCESSING
   OUT_FOR_DELIVERY
   DELIVERED

@@ -1,5 +1,5 @@
 import { HttpStatus, Injectable } from "@nestjs/common";
-import { OrderStatus, RentalStatus } from "@prisma/client";
+import { OrderStatus, PaymentStatus, RentalStatus } from "@prisma/client";
 import { Decimal } from "@prisma/client/runtime/library";
 import { PrismaService } from "src/prisma/prisma.service";
 import { contractOk, contractPublicId, contractFail } from "src/common/contract/response";
@@ -34,6 +34,22 @@ export class OrderContractFlowService {
       }
       meta.selectedDeliverySlotId = slotId;
       (meta.delivery as Record<string, unknown>) = { ...(meta.delivery as object as Record<string, unknown>), selected: found };
+      const paymentDone = order.paymentStatus === PaymentStatus.PAID;
+      const awaitingPayAfterSlot =
+        (order.status === OrderStatus.SLOT_PROPOSED || order.status === OrderStatus.PROCESSING) && !paymentDone;
+      if (awaitingPayAfterSlot) {
+        const updated = await this.prisma.order.update({
+          where: { id: oid },
+          data: { workflowMeta: meta as object, status: OrderStatus.CONFIRMED },
+        });
+        return contractOk({
+          order_id: updated.orderNumber,
+          status: "SLOT_CONFIRMED",
+          selected_slot_id: slotId,
+          order_status: OrderStatus.CONFIRMED,
+          awaits_payment: true,
+        });
+      }
       const updated = await this.prisma.order.update({
         where: { id: oid },
         data: { workflowMeta: meta as object, status: OrderStatus.OUT_FOR_DELIVERY },
@@ -42,6 +58,7 @@ export class OrderContractFlowService {
         order_id: updated.orderNumber,
         status: "SLOT_CONFIRMED",
         selected_slot_id: slotId,
+        order_status: OrderStatus.OUT_FOR_DELIVERY,
       });
     }
     if (action === "REQUEST_DIFFERENT_TIME") {
@@ -61,6 +78,13 @@ export class OrderContractFlowService {
     const oid = await resolveOrderId(this.prisma, orderIdOrNum);
     if (!oid) throw contractFail(ContractErrorCode.RESOURCE_NOT_FOUND, "Order not found", HttpStatus.NOT_FOUND);
     const order = await this.ordersForVendor(vendorUserId, oid);
+    if (order.status !== OrderStatus.CONFIRMED && order.status !== OrderStatus.SLOT_PROPOSED) {
+      throw contractFail(
+        ContractErrorCode.VALIDATION_ERROR,
+        "Order must be CONFIRMED (vendor-approved) or SLOT_PROPOSED to propose or update delivery slots",
+        HttpStatus.BAD_REQUEST
+      );
+    }
     const slots = (Array.isArray(body.delivery_slots) ? body.delivery_slots : []) as Record<string, unknown>[];
     const proposed: Slot[] = slots.map((s) => ({
       id: contractPublicId("SLOT"),
@@ -68,13 +92,24 @@ export class OrderContractFlowService {
       time_from: String(s.time_from ?? ""),
       time_to: String(s.time_to ?? ""),
     }));
+    if (proposed.length === 0) {
+      throw contractFail(
+        ContractErrorCode.VALIDATION_ERROR,
+        "delivery_slots must contain at least one slot",
+        HttpStatus.BAD_REQUEST
+      );
+    }
     const meta = this.getMeta(order.workflowMeta);
     meta.delivery = { proposed, note: body.note != null ? String(body.note) : undefined };
     await this.prisma.order.update({
       where: { id: oid },
-      data: { workflowMeta: meta as object, status: OrderStatus.PROCESSING },
+      data: { workflowMeta: meta as object, status: OrderStatus.SLOT_PROPOSED },
     });
-    return contractOk({ order_id: order.orderNumber, proposed_slots: proposed });
+    return contractOk({
+      order_id: order.orderNumber,
+      status: OrderStatus.SLOT_PROPOSED,
+      proposed_slots: proposed,
+    });
   }
 
   async vendorInitiateReturn(vendorUserId: string, orderIdOrNum: string, body: Record<string, unknown>) {
