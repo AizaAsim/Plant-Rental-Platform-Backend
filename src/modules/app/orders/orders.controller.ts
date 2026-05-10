@@ -36,14 +36,16 @@ import {
 import { JwtAuthGuard } from "../auth/guard/jwt-auth.guard";
 import { RolesGuard } from "../auth/guard/roles.guard";
 import { Roles } from "../auth/decorators/roles.decorator";
-import { UserRole } from "@prisma/client";
+import { UserRole, OrderStatus, OrderType } from "@prisma/client";
+import { UsersService } from "../users/users.service";
 
 @ApiTags("Orders")
 @Controller("api/v1/orders")
 export class OrdersController {
   constructor(
     private readonly ordersService: OrdersService,
-    private readonly orderContractFlow: OrderContractFlowService
+    private readonly orderContractFlow: OrderContractFlowService,
+    private readonly usersService: UsersService
   ) {}
 
   @Post("checkout")
@@ -78,6 +80,33 @@ export class OrdersController {
   })
   async getUserOrders(@Request() req, @Query() filterDto: any) {
     return this.ordersService.getUserOrders(req.user.id, filterDto);
+  }
+
+  /** Spec path; same payload as `GET /api/v1/users/order-history` (must stay before `:order_id` routes). */
+  @Get("history")
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.USER)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: "Order history (spec alias of GET /api/v1/users/order-history)" })
+  @ApiQuery({ name: "page", required: false, type: Number })
+  @ApiQuery({ name: "limit", required: false, type: Number })
+  @ApiQuery({ name: "status", required: false, enum: OrderStatus })
+  @ApiQuery({ name: "order_type", required: false, enum: OrderType })
+  @ApiResponse({ status: 200, description: "Order history retrieved successfully" })
+  async getOrderHistorySpec(
+    @Request() req,
+    @Query("page") page?: string,
+    @Query("limit") limit?: string,
+    @Query("status") status?: OrderStatus,
+    @Query("order_type") orderType?: OrderType
+  ) {
+    return this.usersService.getOrderHistory(
+      req.user.id,
+      page ? parseInt(page, 10) : 1,
+      limit ? parseInt(limit, 10) : 20,
+      status,
+      orderType
+    );
   }
 
   @Get("customer/active-rentals")
@@ -242,7 +271,11 @@ export class OrdersController {
   @Roles(UserRole.USER)
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: "Cancel order" })
+  @ApiOperation({
+    summary: "Cancel order",
+    description:
+      "Allowed only while PENDING or CONFIRMED with unpaid payment (before slots or payment). Releases inventory only if vendor has already approved (stock reserved).",
+  })
   @ApiParam({ name: "order_id", description: "Order ID" })
   @ApiResponse({
     status: 200,

@@ -167,8 +167,7 @@ export class OrderContractFlowService {
       (meta.delivery as Record<string, unknown>) = { ...(meta.delivery as object as Record<string, unknown>), selected: found };
       this.applyGardenerSelectionToMeta(meta, body);
       const paymentDone = order.paymentStatus === PaymentStatus.PAID;
-      const awaitingPayAfterSlot =
-        (order.status === OrderStatus.SLOT_PROPOSED || order.status === OrderStatus.PROCESSING) && !paymentDone;
+      const awaitingPayAfterSlot = order.status === OrderStatus.SLOT_PROPOSED && !paymentDone;
       if (awaitingPayAfterSlot) {
         const payHours = Number(process.env.ORDER_PAYMENT_WINDOW_TTL_HOURS ?? 6);
         meta.paymentWindowExpiresAt = new Date(Date.now() + payHours * 3600000).toISOString();

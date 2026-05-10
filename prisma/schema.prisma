@@ -52,6 +52,7 @@ enum OrderType {
   MIXED
 }
 
+/// Contract / delivery workflow: SLOT_* and AWAITING_PAYMENT gate order payment in PaymentsService.
 enum OrderStatus {
   PENDING
   CONFIRMED

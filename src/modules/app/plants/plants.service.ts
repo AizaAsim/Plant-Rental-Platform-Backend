@@ -85,6 +85,7 @@ export class PlantsService {
       category_id,
       category_slug,
       nursery_id,
+      nurseryId: nurseryIdCamel,
       maintenance_level,
       sunlight_requirement,
       water_frequency,
@@ -108,7 +109,9 @@ export class PlantsService {
       stockQuantity: { gt: 0 },
       ...(category_id && { categoryId: category_id }),
       ...(category_slug && { category: { slug: category_slug } }),
-      ...(nursery_id && { nurseryId: nursery_id }),
+      ...(nursery_id || nurseryIdCamel
+        ? { nurseryId: String(nursery_id || nurseryIdCamel) }
+        : {}),
       ...(maintenance_level && { maintenanceLevel: maintenance_level as MaintenanceLevel }),
       ...(sunlight_requirement && { sunlightRequirement: sunlight_requirement as SunlightRequirement }),
       ...(water_frequency && { waterFrequency: water_frequency as WaterFrequency }),

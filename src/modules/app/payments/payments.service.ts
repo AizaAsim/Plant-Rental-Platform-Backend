@@ -56,6 +56,40 @@ export class PaymentsService {
     return true;
   }
 
+  private orderWorkflowMeta(raw: unknown): Record<string, unknown> {
+    if (raw && typeof raw === "object" && !Array.isArray(raw)) return raw as Record<string, unknown>;
+    return {};
+  }
+
+  /** Slot-confirm path sets `paymentWindowExpiresAt`; initiate may extend only if missing or expired. */
+  private assertOpenPaymentWindow(order: { workflowMeta: unknown }): void {
+    const wm = this.orderWorkflowMeta(order.workflowMeta);
+    const expRaw = wm.paymentWindowExpiresAt;
+    if (typeof expRaw !== "string") {
+      throw new BadRequestException(
+        "Payment is not available yet: confirm a delivery slot first (missing payment_window_expires_at)"
+      );
+    }
+    const exp = new Date(expRaw);
+    if (Number.isNaN(exp.getTime()) || exp.getTime() <= Date.now()) {
+      throw new BadRequestException(
+        "Payment window has expired; ask the vendor to propose new delivery slots"
+      );
+    }
+  }
+
+  private resolvePaymentWindowIso(wm: Record<string, unknown>): string {
+    const hours = Number(process.env.ORDER_PAYMENT_WINDOW_TTL_HOURS ?? 6);
+    const existingExp = wm.paymentWindowExpiresAt;
+    if (typeof existingExp === "string") {
+      const d = new Date(existingExp);
+      if (!Number.isNaN(d.getTime()) && d.getTime() > Date.now()) {
+        return existingExp;
+      }
+    }
+    return new Date(Date.now() + hours * 3600000).toISOString();
+  }
+
   async initiate(
     userId: string,
     body: {
@@ -76,16 +110,31 @@ export class PaymentsService {
     let bookingId: string | null = null;
     let freelanceJobId: string | null = null;
     let metadata: Prisma.InputJsonValue | undefined;
-    let orderForSlotTransition: { id: string; status: OrderStatus } | null = null;
 
     if (payment_for === "ORDER") {
       const order = await this.prisma.order.findFirst({
         where: { id: reference_id, userId },
+        select: {
+          id: true,
+          status: true,
+          totalAmount: true,
+          paymentStatus: true,
+          workflowMeta: true,
+        },
       });
       if (!order) throw new NotFoundException("Order not found");
+      if (order.paymentStatus === PaymentStatus.PAID) {
+        throw new BadRequestException("This order is already paid");
+      }
+      const payEligible = new Set<OrderStatus>([OrderStatus.SLOT_CONFIRMED, OrderStatus.AWAITING_PAYMENT]);
+      if (!payEligible.has(order.status)) {
+        throw new BadRequestException(
+          `Order payment requires a confirmed delivery slot first (status must be SLOT_CONFIRMED or AWAITING_PAYMENT; current: ${order.status})`
+        );
+      }
+      this.assertOpenPaymentWindow(order);
       amount = order.totalAmount;
       orderId = order.id;
-      orderForSlotTransition = { id: order.id, status: order.status };
     } else if (payment_for === "BOOKING") {
       const booking = await this.prisma.serviceBooking.findFirst({
         where: { id: reference_id, userId },
@@ -133,9 +182,52 @@ export class PaymentsService {
       };
     }
 
-    const gatewayOrderId = this.generateGatewayOrderId();
+    const result = await this.prisma.$transaction(async (tx) => {
+      if (payment_for === "ORDER" && orderId) {
+        const dup = await tx.payment.findFirst({
+          where: {
+            orderId,
+            paymentType: PaymentType.ORDER,
+            status: TransactionStatus.PENDING,
+          },
+          orderBy: { createdAt: "desc" },
+        });
+        if (dup) {
+          let gid = dup.gatewayOrderId;
+          if (!gid) {
+            gid = this.generateGatewayOrderId();
+            await tx.payment.update({
+              where: { id: dup.id },
+              data: { gatewayOrderId: gid },
+            });
+          }
+          const curDup = await tx.order.findUnique({
+            where: { id: orderId },
+            select: { status: true, workflowMeta: true },
+          });
+          if (curDup?.status === OrderStatus.SLOT_CONFIRMED) {
+            const wm = this.orderWorkflowMeta(curDup.workflowMeta);
+            const payExp = this.resolvePaymentWindowIso(wm);
+            await tx.order.update({
+              where: { id: orderId },
+              data: {
+                status: OrderStatus.AWAITING_PAYMENT,
+                workflowMeta: {
+                  ...wm,
+                  paymentWindowExpiresAt: payExp,
+                } as Prisma.InputJsonValue,
+              },
+            });
+          }
+          return {
+            payment: dup,
+            gatewayOrderId: gid,
+            reused: true as const,
+          };
+        }
+      }
 
-    const payment = await this.prisma.$transaction(async (tx) => {
+      const gatewayOrderId = this.generateGatewayOrderId();
       const p = await tx.payment.create({
         data: {
           userId,
@@ -151,32 +243,32 @@ export class PaymentsService {
           ...(metadata != null ? { metadata } : {}),
         },
       });
-      if (
-        payment_for === "ORDER" &&
-        orderForSlotTransition?.status === OrderStatus.SLOT_CONFIRMED
-      ) {
-        const oid = orderForSlotTransition.id;
+
+      if (payment_for === "ORDER" && orderId) {
         const cur = await tx.order.findUnique({
-          where: { id: oid },
-          select: { workflowMeta: true },
+          where: { id: orderId },
+          select: { status: true, workflowMeta: true },
         });
-        const wm = (cur?.workflowMeta && typeof cur.workflowMeta === "object"
-          ? (cur.workflowMeta as Record<string, unknown>)
-          : {}) as Record<string, unknown>;
-        const hours = Number(process.env.ORDER_PAYMENT_WINDOW_TTL_HOURS ?? 6);
-        await tx.order.update({
-          where: { id: oid },
-          data: {
-            status: OrderStatus.AWAITING_PAYMENT,
-            workflowMeta: {
-              ...wm,
-              paymentWindowExpiresAt: new Date(Date.now() + hours * 3600000).toISOString(),
-            } as Prisma.InputJsonValue,
-          },
-        });
+        if (cur?.status === OrderStatus.SLOT_CONFIRMED) {
+          const wm = this.orderWorkflowMeta(cur.workflowMeta);
+          const payExp = this.resolvePaymentWindowIso(wm);
+          await tx.order.update({
+            where: { id: orderId },
+            data: {
+              status: OrderStatus.AWAITING_PAYMENT,
+              workflowMeta: {
+                ...wm,
+                paymentWindowExpiresAt: payExp,
+              } as Prisma.InputJsonValue,
+            },
+          });
+        }
       }
-      return p;
+
+      return { payment: p, gatewayOrderId, reused: false as const };
     });
+
+    const { payment, gatewayOrderId, reused } = result;
 
     return {
       success: true,
@@ -186,7 +278,10 @@ export class PaymentsService {
       gateway_payment_id: `mock_gp_${randomUUID()}`,
       amount: amount.toString(),
       redirect_url: return_url || `https://mock-gateway.example/pay/${gatewayOrderId}`,
-      message: "Mock payment initialized — any verify payload will succeed",
+      message: reused
+        ? "Existing pending order payment — continue with the same gateway_order_id"
+        : "Mock payment initialized — any verify payload will succeed",
+      reused,
     };
   }
 
@@ -228,6 +323,34 @@ export class PaymentsService {
       throw new NotFoundException("Payment not found for this gateway order");
     }
 
+    if (payment.status === TransactionStatus.SUCCESS) {
+      const out = {
+        success: true,
+        verified: true,
+        mock: true,
+        payment_id: payment.id,
+        status: TransactionStatus.SUCCESS,
+        message: "Payment was already verified",
+        idempotent: true,
+      };
+      if (idempotencyKey) {
+        await this.idempotency.save(idempotencyKey, route, userId, body, 200, out);
+      }
+      return out;
+    }
+
+    const orderPayment = payment.order;
+    if (payment.paymentType === PaymentType.ORDER && orderPayment) {
+      if (orderPayment.paymentStatus !== PaymentStatus.PAID) {
+        if (orderPayment.status !== OrderStatus.AWAITING_PAYMENT) {
+          throw new BadRequestException(
+            `Order payment can only be verified after payment is initiated (order status AWAITING_PAYMENT; current: ${orderPayment.status})`
+          );
+        }
+        this.assertOpenPaymentWindow(orderPayment);
+      }
+    }
+
     // Mock: signature always valid
     await this.prisma.payment.update({
       where: { id: payment.id },
@@ -237,7 +360,7 @@ export class PaymentsService {
       },
     });
 
-    if (payment.orderId && payment.order) {
+    if (payment.orderId && payment.order && payment.order.paymentStatus !== PaymentStatus.PAID) {
       await this.prisma.order.update({
         where: { id: payment.orderId },
         data: {

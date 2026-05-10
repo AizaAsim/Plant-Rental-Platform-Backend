@@ -59,6 +59,11 @@ export class OrdersService {
     return s;
   }
 
+  /** Stock is decremented at vendor approve (v4 flow), not at checkout. `vendor_approval_selections` is set atomically with that reservation. */
+  private inventoryReservedAtApproval(order: { vendorApprovalSelections: Prisma.JsonValue | null }): boolean {
+    return order.vendorApprovalSelections != null;
+  }
+
   /** Assign-gardener / processing path: nursery work after money captured */
   private assertOrderPaid(order: { paymentStatus: PaymentStatus }, action: string) {
     if (order.paymentStatus !== PaymentStatus.PAID) {
@@ -678,29 +683,10 @@ export class OrdersService {
         },
       });
 
-      // Reserve stock
-      for (const orderItem of orderItems) {
-        await this.prisma.plant.update({
-          where: { id: orderItem.plantId },
-          data: {
-            stockQuantity: {
-              decrement: orderItem.quantity,
-            },
-          },
-        });
-      }
+      // Inventory is reserved when the vendor approves (`vendorApproveOrder`), not at checkout.
 
-      // Create payment record
-      await this.prisma.payment.create({
-        data: {
-          orderId: order.id,
-          userId,
-          amount: totalAmount,
-          paymentType: "ORDER",
-          paymentMethod: payment_method,
-          status: "PENDING",
-        },
-      });
+      // Order payment rows are created only via POST /payments/initiate after the customer has
+      // confirmed a delivery slot (SLOT_CONFIRMED → AWAITING_PAYMENT).
 
       // Create coupon usage if coupon applied
       if (coupon && orderDiscount.gt(0)) {
@@ -931,39 +917,39 @@ export class OrdersService {
       throw new NotFoundException("Order not found");
     }
 
-    if (
-      !["PENDING", "CONFIRMED", "SLOT_PROPOSED", "SLOT_CONFIRMED", "AWAITING_PAYMENT"].includes(
-        order.status
-      )
-    ) {
-      throw new BadRequestException("Order cannot be cancelled at this stage");
+    const canCancelPending = order.status === OrderStatus.PENDING;
+    const canCancelApprovedUnpaid =
+      order.status === OrderStatus.CONFIRMED && order.paymentStatus === PaymentStatus.PENDING;
+    if (!canCancelPending && !canCancelApprovedUnpaid) {
+      throw new BadRequestException(
+        "Order can only be cancelled while PENDING or CONFIRMED without payment (before delivery slots or payment). Cannot cancel after slots are proposed or payment has started."
+      );
     }
 
-    // Release reserved stock
-    for (const item of order.items) {
-      await this.prisma.plant.update({
-        where: { id: item.plantId },
+    const updated = await this.prisma.$transaction(async (tx) => {
+      if (this.inventoryReservedAtApproval(order)) {
+        for (const item of order.items) {
+          await tx.plant.update({
+            where: { id: item.plantId },
+            data: { stockQuantity: { increment: item.quantity } },
+          });
+        }
+      }
+
+      return tx.order.update({
+        where: { id: orderId },
         data: {
-          stockQuantity: {
-            increment: item.quantity,
-          },
+          status: OrderStatus.CANCELLED,
+          cancelledBy: userId,
+          cancellationReason: reason,
+          cancelledAt: new Date(),
+          paymentStatus:
+            order.paymentStatus === PaymentStatus.PAID ? PaymentStatus.REFUNDED : PaymentStatus.PENDING,
         },
       });
-    }
-
-    // Update order status
-    const updated = await this.prisma.order.update({
-      where: { id: orderId },
-      data: {
-        status: OrderStatus.CANCELLED,
-        cancelledBy: userId,
-        cancellationReason: reason,
-        cancelledAt: new Date(),
-        paymentStatus: order.paymentStatus === PaymentStatus.PAID ? PaymentStatus.REFUNDED : PaymentStatus.PENDING,
-      },
     });
 
-    // Initiate refund if paid
+    // Initiate refund if paid (should not happen for allowed cancel paths; kept for symmetry)
     if (order.paymentStatus === PaymentStatus.PAID) {
       await this.prisma.payment.create({
         data: {
@@ -1446,29 +1432,27 @@ export class OrdersService {
       );
     }
 
-    // Release stock
-    for (const item of order.items) {
-      await this.prisma.plant.update({
-        where: { id: item.plantId },
+    const updated = await this.prisma.$transaction(async (tx) => {
+      if (this.inventoryReservedAtApproval(order)) {
+        for (const item of order.items) {
+          await tx.plant.update({
+            where: { id: item.plantId },
+            data: { stockQuantity: { increment: item.quantity } },
+          });
+        }
+      }
+
+      return tx.order.update({
+        where: { id: order.id },
         data: {
-          stockQuantity: {
-            increment: item.quantity,
-          },
+          status: OrderStatus.CANCELLED,
+          cancelledBy: vendorId,
+          cancellationReason: reason,
+          cancelledAt: new Date(),
+          paymentStatus:
+            order.paymentStatus === PaymentStatus.PAID ? PaymentStatus.REFUNDED : PaymentStatus.PENDING,
         },
       });
-    }
-
-    // Update order
-    const updated = await this.prisma.order.update({
-      where: { id: order.id },
-      data: {
-        status: OrderStatus.CANCELLED,
-        cancelledBy: vendorId,
-        cancellationReason: reason,
-        cancelledAt: new Date(),
-        paymentStatus:
-          order.paymentStatus === PaymentStatus.PAID ? PaymentStatus.REFUNDED : PaymentStatus.PENDING,
-      },
     });
 
     // Initiate refund if paid
@@ -1886,16 +1870,39 @@ export class OrdersService {
       throw new BadRequestException("plant_selections must include every order line");
     }
 
-    const updated = await this.prisma.order.update({
-      where: { id: order.id },
-      data: {
-        status: OrderStatus.CONFIRMED,
-        vendorApprovalSelections: selections as unknown as Prisma.InputJsonValue,
-      },
-      include: {
-        items: { include: { plant: { include: { images: { where: { isPrimary: true }, take: 1 } } } } },
-        user: { select: { id: true, fullName: true, email: true } },
-      },
+    const updated = await this.prisma.$transaction(async (tx) => {
+      for (const line of items) {
+        const plant = await tx.plant.findUnique({
+          where: { id: line.plantId },
+          select: { stockQuantity: true },
+        });
+        if (!plant) {
+          throw new BadRequestException(`Plant not found for order line ${line.id}`);
+        }
+        if (plant.stockQuantity < line.quantity) {
+          throw new BadRequestException(
+            `Insufficient stock for plant ${line.plantId} (need ${line.quantity}, have ${plant.stockQuantity})`
+          );
+        }
+      }
+      for (const line of items) {
+        await tx.plant.update({
+          where: { id: line.plantId },
+          data: { stockQuantity: { decrement: line.quantity } },
+        });
+      }
+
+      return tx.order.update({
+        where: { id: order.id },
+        data: {
+          status: OrderStatus.CONFIRMED,
+          vendorApprovalSelections: selections as unknown as Prisma.InputJsonValue,
+        },
+        include: {
+          items: { include: { plant: { include: { images: { where: { isPrimary: true }, take: 1 } } } } },
+          user: { select: { id: true, fullName: true, email: true } },
+        },
+      });
     });
 
     await this.prisma.notification.create({

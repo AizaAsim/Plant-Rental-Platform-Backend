@@ -21,7 +21,10 @@ export class InternalJobsController {
   }
 
   @Post("orders/expire-stale-slot-proposals")
-  @ApiOperation({ summary: "Expire SLOT_PROPOSED after workflowMeta.delivery.slotExpiresAt" })
+  @ApiOperation({
+    summary:
+      "Expire SLOT_PROPOSED when slot TTL passed (workflowMeta.delivery.slotExpiresAt), else fallback by updatedAt + ORDER_SLOT_TTL_HOURS",
+  })
   async expireStaleSlotProposals(@Body() body: Record<string, unknown>) {
     return this.svc.expireStaleSlotProposals(body);
   }

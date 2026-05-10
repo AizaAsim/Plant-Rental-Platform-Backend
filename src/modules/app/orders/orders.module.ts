@@ -6,9 +6,10 @@ import { OrdersService } from "./orders.service";
 import { OrderContractFlowService } from "./order-contract-flow.service";
 import { PrismaModule } from "src/prisma/prisma.module";
 import { CartModule } from "../cart/cart.module";
+import { UsersModule } from "../users/users.module";
 import { RolesGuard } from "../auth/guard/roles.guard";
 @Module({
-  imports: [PrismaModule, CartModule],
+  imports: [PrismaModule, CartModule, UsersModule],
   controllers: [OrdersController, VendorRentalsController],
   providers: [OrdersService, OrderContractFlowService, RolesGuard],
   exports: [OrdersService, OrderContractFlowService],

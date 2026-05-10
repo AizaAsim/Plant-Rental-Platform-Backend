@@ -30,7 +30,8 @@ export class InternalJobsService {
   }
 
   /**
-   * Terminal EXPIRED + release stock (units reserved at checkout). Idempotent under concurrent runs.
+   * Terminal EXPIRED + release stock when inventory was reserved at vendor approval.
+   * Idempotent under concurrent runs.
    */
   async expireOrderWithStockRelease(
     orderId: string,
@@ -57,11 +58,13 @@ export class InternalJobsService {
       });
       if (u.count === 0) return;
       transitioned = true;
-      for (const item of order.items) {
-        await tx.plant.update({
-          where: { id: item.plantId },
-          data: { stockQuantity: { increment: item.quantity } },
-        });
+      if (order.vendorApprovalSelections != null) {
+        for (const item of order.items) {
+          await tx.plant.update({
+            where: { id: item.plantId },
+            data: { stockQuantity: { increment: item.quantity } },
+          });
+        }
       }
     });
 
@@ -100,9 +103,11 @@ export class InternalJobsService {
   /** `workflowMeta.delivery.slotExpiresAt` passed (set when vendor proposes). */
   async expireStaleSlotProposals(body: Record<string, unknown>) {
     const dryRun = body.dry_run === true;
+    const fallbackHours = Number(body.fallback_ttl_hours ?? process.env.ORDER_SLOT_TTL_HOURS ?? 6);
+    const fallbackMs = fallbackHours * 3600 * 1000;
     const rows = await this.prisma.order.findMany({
       where: { status: OrderStatus.SLOT_PROPOSED },
-      select: { id: true, orderNumber: true, workflowMeta: true },
+      select: { id: true, orderNumber: true, workflowMeta: true, updatedAt: true },
       take: 400,
     });
     const now = Date.now();
@@ -111,9 +116,14 @@ export class InternalJobsService {
       const m = this.getMeta(r.workflowMeta);
       const del = m.delivery as Record<string, unknown> | undefined;
       const slotExpiresAt = del?.slotExpiresAt;
-      if (typeof slotExpiresAt !== "string") continue;
-      if (new Date(slotExpiresAt).getTime() > now) continue;
-      due.push({ id: r.id, orderNumber: r.orderNumber });
+      if (typeof slotExpiresAt === "string") {
+        if (new Date(slotExpiresAt).getTime() > now) continue;
+        due.push({ id: r.id, orderNumber: r.orderNumber });
+        continue;
+      }
+      if (r.updatedAt.getTime() + fallbackMs <= now) {
+        due.push({ id: r.id, orderNumber: r.orderNumber });
+      }
     }
     if (dryRun) {
       return contractOk({ would_expire: due.length, order_numbers: due.map((d) => d.orderNumber) });
