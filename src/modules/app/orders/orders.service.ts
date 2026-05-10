@@ -11,7 +11,11 @@ import {
   OrderStatus,
   OrderType,
   PaymentStatus,
+  PaymentType,
   RentalStatus,
+  TaskPriority,
+  TaskStatus,
+  TaskType,
   TransactionStatus,
   NotificationType,
 } from "@prisma/client";
@@ -28,12 +32,86 @@ import {
   FULFILLMENT_LINE_CONDITIONS,
 } from "./fulfillment-line.constants";
 
+const VENDOR_REJECT_REASON_MIN_LEN = 3;
+const VENDOR_REJECT_REASON_MAX_LEN = 2000;
+const ASSIGN_MAINTENANCE_SCHEDULES = ["WEEKLY", "BIWEEKLY", "MONTHLY"] as const;
+
 @Injectable()
 export class OrdersService {
   constructor(
     private prisma: PrismaService,
     private cartService: CartService
   ) {}
+
+  /** reason or rejection_reason; trimmed non-empty bounded length */
+  private parseVendorRejectReason(body: Record<string, unknown> | undefined | null): string {
+    const raw = body?.reason ?? body?.rejection_reason ?? body?.cancellation_reason;
+    const s =
+      typeof raw === "string" ? raw.trim() : raw != null ? String(raw).trim() : "";
+    if (s.length < VENDOR_REJECT_REASON_MIN_LEN) {
+      throw new BadRequestException(
+        `Rejection requires a clear reason (${VENDOR_REJECT_REASON_MIN_LEN}-${VENDOR_REJECT_REASON_MAX_LEN} characters)`
+      );
+    }
+    if (s.length > VENDOR_REJECT_REASON_MAX_LEN) {
+      throw new BadRequestException(`Rejection reason must be at most ${VENDOR_REJECT_REASON_MAX_LEN} characters`);
+    }
+    return s;
+  }
+
+  /** Assign-gardener / processing path: nursery work after money captured */
+  private assertOrderPaid(order: { paymentStatus: PaymentStatus }, action: string) {
+    if (order.paymentStatus !== PaymentStatus.PAID) {
+      throw new BadRequestException(
+        `${action}: order payment_status must be PAID before this action`
+      );
+    }
+  }
+
+  private parseAssignMaintenanceSchedule(raw: unknown): (typeof ASSIGN_MAINTENANCE_SCHEDULES)[number] {
+    const s = String(raw ?? "")
+      .trim()
+      .toUpperCase()
+      .replace(/-/g, "_");
+    if ((ASSIGN_MAINTENANCE_SCHEDULES as readonly string[]).includes(s)) {
+      return s as (typeof ASSIGN_MAINTENANCE_SCHEDULES)[number];
+    }
+    throw new BadRequestException(
+      `maintenance_schedule must be one of: ${ASSIGN_MAINTENANCE_SCHEDULES.join(", ")}`
+    );
+  }
+
+  /** When delivery_slots is sent from vendor, mirror propose-delivery-slots slot shape */
+  private assertDeliverySlotsArrayShape(slots: unknown): void {
+    if (slots == null) return;
+    if (!Array.isArray(slots)) {
+      throw new BadRequestException("delivery_slots must be an array when provided");
+    }
+    slots.forEach((s, idx) => {
+      if (!s || typeof s !== "object") {
+        throw new BadRequestException(`delivery_slots[${idx}] must be an object`);
+      }
+      const row = s as Record<string, unknown>;
+      const date = row.date != null ? String(row.date).trim() : "";
+      const from = row.time_from != null ? String(row.time_from).trim() : "";
+      const to = row.time_to != null ? String(row.time_to).trim() : "";
+      if (!date || !from || !to) {
+        throw new BadRequestException(
+          `delivery_slots[${idx}]: date, time_from, and time_to are required strings`
+        );
+      }
+    });
+  }
+
+  private assertCustomerOrderAllowsRentalMutation(order: { status: OrderStatus }, actionLabel: string) {
+    const blocked = new Set<OrderStatus>([
+      OrderStatus.CANCELLED,
+      OrderStatus.EXPIRED,
+    ]);
+    if (blocked.has(order.status)) {
+      throw new BadRequestException(`${actionLabel} is not allowed when order status is ${order.status}`);
+    }
+  }
 
   private generateOrderNumber(): string {
     const timestamp = Date.now();
@@ -909,9 +987,12 @@ export class OrdersService {
       throw new BadRequestException("new_end_date is required");
     }
 
+    const oid = await resolveOrderId(this.prisma, orderId);
+    if (!oid) throw new NotFoundException("Order not found");
+
     const order = await this.prisma.order.findFirst({
       where: {
-        id: orderId,
+        id: oid,
         userId,
       },
       include: {
@@ -927,6 +1008,18 @@ export class OrdersService {
       throw new NotFoundException("Order not found");
     }
 
+    this.assertCustomerOrderAllowsRentalMutation(order, "Rental extension");
+
+    const extendOrderStatuses = new Set<OrderStatus>([
+      OrderStatus.DELIVERED,
+      OrderStatus.COMPLETED,
+    ]);
+    if (!extendOrderStatuses.has(order.status)) {
+      throw new BadRequestException(
+        `Rental extension is only allowed when order status is DELIVERED or COMPLETED (current: ${order.status})`
+      );
+    }
+
     const orderItem = order.items.find((i) => i.id === itemId);
 
     if (!orderItem) {
@@ -937,8 +1030,16 @@ export class OrdersService {
       throw new BadRequestException("Item is not a rental");
     }
 
-    if (!["ACTIVE", "EXTENDED"].includes(orderItem.rentalStatus || "")) {
-      throw new BadRequestException("Rental is not active");
+    const rentState = orderItem.rentalStatus;
+    const extendableStatuses: RentalStatus[] = [
+      RentalStatus.ACTIVE,
+      RentalStatus.EXTENDED,
+      RentalStatus.OVERDUE,
+    ];
+    if (!rentState || !extendableStatuses.includes(rentState)) {
+      throw new BadRequestException(
+        `Rental must be ACTIVE, EXTENDED, or OVERDUE to extend (current: ${rentState ?? "unset"})`
+      );
     }
 
     const newEndDate = new Date(new_end_date);
@@ -989,9 +1090,9 @@ export class OrdersService {
         orderId: order.id,
         userId,
         amount: extensionPrice,
-        paymentType: "RENTAL_EXTENSION",
+        paymentType: PaymentType.RENTAL_EXTENSION,
         paymentMethod: order.paymentMethod || "ONLINE",
-        status: "PENDING",
+        status: TransactionStatus.PENDING,
       },
     });
 
@@ -1004,11 +1105,14 @@ export class OrdersService {
 
   // POST /api/v1/orders/{order_id}/items/{item_id}/return
   async initiateReturn(userId: string, orderId: string, itemId: string, returnDto: any) {
-    const { return_date, pickup_time_slot } = returnDto;
+    const { return_date, pickup_time_slot } = returnDto ?? {};
+
+    const oid = await resolveOrderId(this.prisma, orderId);
+    if (!oid) throw new NotFoundException("Order not found");
 
     const order = await this.prisma.order.findFirst({
       where: {
-        id: orderId,
+        id: oid,
         userId,
       },
       include: {
@@ -1025,6 +1129,18 @@ export class OrdersService {
       throw new NotFoundException("Order not found");
     }
 
+    this.assertCustomerOrderAllowsRentalMutation(order, "Return initiation");
+
+    if (
+      order.status !== OrderStatus.DELIVERED &&
+      order.status !== OrderStatus.COMPLETED &&
+      order.status !== OrderStatus.OUT_FOR_DELIVERY
+    ) {
+      throw new BadRequestException(
+        "Returns can only be initiated when the order is OUT_FOR_DELIVERY, DELIVERED, or COMPLETED"
+      );
+    }
+
     const orderItem = order.items.find((i) => i.id === itemId);
 
     if (!orderItem) {
@@ -1035,11 +1151,32 @@ export class OrdersService {
       throw new BadRequestException("Item is not a rental");
     }
 
-    if (!["ACTIVE", "EXTENDED"].includes(orderItem.rentalStatus || "")) {
-      throw new BadRequestException("Rental is not active");
+    if (orderItem.rentalStatus === RentalStatus.RETURNED) {
+      throw new BadRequestException("Rental item is already returned");
     }
 
-    const returnDate = return_date ? new Date(return_date) : new Date();
+    const returnEligible: RentalStatus[] = [
+      RentalStatus.ACTIVE,
+      RentalStatus.EXTENDED,
+      RentalStatus.OVERDUE,
+    ];
+    const rs = orderItem.rentalStatus;
+    if (!rs || !returnEligible.includes(rs)) {
+      throw new BadRequestException(
+        `Return requires rental status ACTIVE, EXTENDED, or OVERDUE (current: ${rs ?? "unset"})`
+      );
+    }
+
+    let returnDate: Date;
+    if (return_date != null && String(return_date).trim() !== "") {
+      returnDate = new Date(String(return_date));
+      if (Number.isNaN(returnDate.getTime())) {
+        throw new BadRequestException("return_date must be a valid date");
+      }
+    } else {
+      returnDate = new Date();
+    }
+    void pickup_time_slot;
 
     // Update order item
     await this.prisma.orderItem.update({
@@ -1178,7 +1315,16 @@ export class OrdersService {
 
   // PUT /api/v1/vendor/orders/{order_id}/status
   async updateOrderStatus(vendorId: string, orderId: string, statusDto: any) {
-    const { status, notes } = statusDto;
+    const { status: rawStatus, notes } = statusDto ?? {};
+
+    if (rawStatus == null || String(rawStatus).trim() === "") {
+      throw new BadRequestException("status is required");
+    }
+    const statusStr = String(rawStatus).trim();
+    if (!(Object.values(OrderStatus) as string[]).includes(statusStr)) {
+      throw new BadRequestException(`Invalid order status: ${statusStr}`);
+    }
+    const status = statusStr as OrderStatus;
 
     const nursery = await this.prisma.nursery.findUnique({
       where: { vendorId },
@@ -1188,9 +1334,12 @@ export class OrdersService {
       throw new NotFoundException("Nursery not found");
     }
 
+    const oid = await resolveOrderId(this.prisma, orderId);
+    if (!oid) throw new NotFoundException("Order not found");
+
     const order = await this.prisma.order.findFirst({
       where: {
-        id: orderId,
+        id: oid,
         nurseryId: nursery.id,
       },
     });
@@ -1219,6 +1368,15 @@ export class OrdersService {
       throw new BadRequestException(`Invalid status transition from ${order.status} to ${status}`);
     }
 
+    if (
+      status === OrderStatus.PROCESSING &&
+      order.paymentStatus !== PaymentStatus.PAID
+    ) {
+      throw new BadRequestException(
+        `Cannot set status to PROCESSING: order payment_status must be PAID (current: ${order.paymentStatus})`
+      );
+    }
+
     const updateData: Prisma.OrderUpdateInput = {
       status,
       ...(notes && { notes: `${order.notes || ""}\n${notes}`.trim() }),
@@ -1226,7 +1384,7 @@ export class OrdersService {
     };
 
     const updated = await this.prisma.order.update({
-      where: { id: orderId },
+      where: { id: order.id },
       data: updateData,
       include: {
         user: {
@@ -1245,8 +1403,8 @@ export class OrdersService {
   }
 
   // POST /api/v1/vendor/orders/{order_id}/reject
-  async rejectOrder(vendorId: string, orderId: string, rejectDto: any) {
-    const { reason } = rejectDto;
+  async rejectOrder(vendorId: string, orderId: string, rejectDto: Record<string, unknown>) {
+    const reason = this.parseVendorRejectReason(rejectDto);
 
     const nursery = await this.prisma.nursery.findUnique({
       where: { vendorId },
@@ -1256,11 +1414,22 @@ export class OrdersService {
       throw new NotFoundException("Nursery not found");
     }
 
+    const oid = await resolveOrderId(this.prisma, orderId);
+    if (!oid) throw new NotFoundException("Order not found");
+
+    const rejectableStatuses: OrderStatus[] = [
+      OrderStatus.PENDING,
+      OrderStatus.CONFIRMED,
+      OrderStatus.SLOT_PROPOSED,
+      OrderStatus.SLOT_CONFIRMED,
+      OrderStatus.AWAITING_PAYMENT,
+    ];
+
     const order = await this.prisma.order.findFirst({
       where: {
-        id: orderId,
+        id: oid,
         nurseryId: nursery.id,
-        status: OrderStatus.PENDING,
+        status: { in: rejectableStatuses },
       },
       include: {
         items: {
@@ -1272,7 +1441,9 @@ export class OrdersService {
     });
 
     if (!order) {
-      throw new NotFoundException("Order not found or cannot be rejected");
+      throw new NotFoundException(
+        "Order not found or cannot be rejected at this status (only pre-fulfillment states)"
+      );
     }
 
     // Release stock
@@ -1289,13 +1460,14 @@ export class OrdersService {
 
     // Update order
     const updated = await this.prisma.order.update({
-      where: { id: orderId },
+      where: { id: order.id },
       data: {
         status: OrderStatus.CANCELLED,
         cancelledBy: vendorId,
         cancellationReason: reason,
         cancelledAt: new Date(),
-        paymentStatus: order.paymentStatus === PaymentStatus.PAID ? PaymentStatus.REFUNDED : PaymentStatus.PENDING,
+        paymentStatus:
+          order.paymentStatus === PaymentStatus.PAID ? PaymentStatus.REFUNDED : PaymentStatus.PENDING,
       },
     });
 
@@ -1306,9 +1478,9 @@ export class OrdersService {
           orderId: order.id,
           userId: order.userId,
           amount: order.totalAmount,
-          paymentType: "REFUND",
+          paymentType: PaymentType.REFUND,
           paymentMethod: order.paymentMethod || "REFUND",
-          status: "PENDING",
+          status: TransactionStatus.PENDING,
         },
       });
     }
@@ -1319,34 +1491,48 @@ export class OrdersService {
   }
 
   // POST /api/v1/vendor/orders/{order_id}/assign-gardener
-  async assignGardener(vendorId: string, orderId: string, assignDto: any) {
-    const { gardener_id, order_item_id, maintenance_schedule } = assignDto;
+  async assignGardener(vendorId: string, orderId: string, assignDto: Record<string, unknown>) {
+    const gardenerId = String(assignDto.gardener_id ?? "").trim();
+    const orderItemId = String(assignDto.order_item_id ?? "").trim();
+    if (!gardenerId || !orderItemId) {
+      throw new BadRequestException("gardener_id and order_item_id are required");
+    }
+
+    const maintenanceSchedule = this.parseAssignMaintenanceSchedule(assignDto.maintenance_schedule);
+    this.assertDeliverySlotsArrayShape(assignDto.delivery_slots);
 
     const nursery = await this.prisma.nursery.findUnique({
       where: { vendorId },
-      include: {
-        gardeners: true,
-      },
     });
 
     if (!nursery) {
       throw new NotFoundException("Nursery not found");
     }
 
-    // Verify gardener belongs to nursery
-    const gardener = nursery.gardeners.find((g) => g.id === gardener_id);
+    const gardener = await this.prisma.gardener.findFirst({
+      where: {
+        id: gardenerId,
+        nurseryId: nursery.id,
+        deactivatedAt: null,
+      },
+    });
     if (!gardener) {
-      throw new BadRequestException("Gardener does not belong to this nursery");
+      throw new BadRequestException(
+        "Gardener not found, not attached to this nursery, or deactivated"
+      );
     }
+
+    const oid = await resolveOrderId(this.prisma, orderId);
+    if (!oid) throw new NotFoundException("Order not found");
 
     const order = await this.prisma.order.findFirst({
       where: {
-        id: orderId,
+        id: oid,
         nurseryId: nursery.id,
       },
       include: {
         items: {
-          where: { id: order_item_id },
+          where: { id: orderItemId },
         },
       },
     });
@@ -1355,29 +1541,48 @@ export class OrdersService {
       throw new NotFoundException("Order not found");
     }
 
+    this.assertOrderPaid(order, "assign-gardener");
+
+    const assignableStatuses = new Set<OrderStatus>([
+      OrderStatus.CONFIRMED,
+      OrderStatus.SLOT_CONFIRMED,
+      OrderStatus.PROCESSING,
+      OrderStatus.OUT_FOR_DELIVERY,
+      OrderStatus.DELIVERED,
+    ]);
+    if (!assignableStatuses.has(order.status)) {
+      throw new BadRequestException(
+        `Cannot assign gardener in order status ${order.status}; expected one of CONFIRMED, SLOT_CONFIRMED, PROCESSING, OUT_FOR_DELIVERY, DELIVERED`
+      );
+    }
+
     const orderItem = order.items[0];
     if (!orderItem) {
-      throw new NotFoundException("Order item not found");
+      throw new NotFoundException("Order item not found on this order");
     }
 
     if (orderItem.orderType !== OrderType.RENT) {
       throw new BadRequestException("Can only assign gardener to rental items");
     }
 
-    // Create recurring maintenance tasks
-    const scheduleMap: Record<string, number> = {
+    const scheduleMap: Record<(typeof ASSIGN_MAINTENANCE_SCHEDULES)[number], number> = {
       WEEKLY: 7,
       BIWEEKLY: 14,
       MONTHLY: 30,
     };
 
-    const daysInterval = scheduleMap[maintenance_schedule] || 7;
-    const startDate = orderItem.rentStartDate || new Date();
-    const endDate = orderItem.rentEndDate || new Date();
+    const daysInterval = scheduleMap[maintenanceSchedule];
+    const startDate = orderItem.rentStartDate ? new Date(orderItem.rentStartDate) : new Date();
+    const endDate = orderItem.rentEndDate ? new Date(orderItem.rentEndDate) : new Date();
 
-    // Get user and address from order
+    if (endDate.getTime() < startDate.getTime()) {
+      throw new BadRequestException(
+        "Rental rent_end_date must be on or after rent_start_date on the order line to schedule maintenance"
+      );
+    }
+
     const orderWithUser = await this.prisma.order.findUnique({
-      where: { id: orderId },
+      where: { id: order.id },
       include: {
         user: true,
         deliveryAddress: true,
@@ -1388,7 +1593,7 @@ export class OrdersService {
       throw new NotFoundException("Order not found");
     }
 
-    const tasks = [];
+    const tasks: Prisma.MaintenanceTaskCreateManyInput[] = [];
     let currentDate = new Date(startDate);
     let taskCounter = 1;
 
@@ -1396,31 +1601,45 @@ export class OrdersService {
       const taskNumber = `TASK-${Date.now()}-${taskCounter++}`;
       tasks.push({
         taskNumber,
-        orderItemId: order_item_id,
-        gardenerId: gardener_id,
+        orderItemId: orderItem.id,
+        gardenerId,
         nurseryId: nursery.id,
         userId: orderWithUser.userId,
         addressId: orderWithUser.deliveryAddressId,
-        taskType: "SCHEDULED_MAINTENANCE",
-        description: `Recurring maintenance (${maintenance_schedule}) for plant ${orderItem.plantId}`,
+        taskType: TaskType.SCHEDULED_MAINTENANCE,
+        description: `Recurring maintenance (${maintenanceSchedule}) for plant ${orderItem.plantId}`,
         scheduledDate: new Date(currentDate),
-        status: "PENDING",
-        priority: "MEDIUM",
+        scheduledTime: null,
+        status: TaskStatus.PENDING,
+        priority: TaskPriority.MEDIUM,
       });
 
       currentDate.setDate(currentDate.getDate() + daysInterval);
+    }
+
+    if (tasks.length === 0) {
+      throw new BadRequestException(
+        "No maintenance visits fit in the rental window; extend rental dates before assigning"
+      );
     }
 
     await this.prisma.maintenanceTask.createMany({
       data: tasks,
     });
 
-    if (Array.isArray(assignDto?.delivery_slots) && assignDto.delivery_slots.length) {
-      const o = await this.prisma.order.findUnique({ where: { id: orderId }, select: { workflowMeta: true } });
+    if (Array.isArray(assignDto.delivery_slots) && assignDto.delivery_slots.length) {
+      const o = await this.prisma.order.findUnique({
+        where: { id: order.id },
+        select: { workflowMeta: true },
+      });
       const meta = (o?.workflowMeta as Record<string, unknown>) ?? {};
-      meta.assignGardener = { delivery_slots: assignDto.delivery_slots, gardener_id, order_item_id };
+      meta.assignGardener = {
+        delivery_slots: assignDto.delivery_slots,
+        gardener_id: gardenerId,
+        order_item_id: orderItemId,
+      };
       await this.prisma.order.update({
-        where: { id: orderId },
+        where: { id: order.id },
         data: { workflowMeta: meta as object },
       });
     }
@@ -1428,6 +1647,7 @@ export class OrdersService {
     return {
       message: "Gardener assigned and maintenance schedule created",
       tasks_created: tasks.length,
+      maintenance_schedule: maintenanceSchedule,
     };
   }
 
@@ -1699,7 +1919,9 @@ export class OrdersService {
       throw new BadRequestException("Order must be confirmed before processing");
     }
     if (order.paymentStatus !== PaymentStatus.PAID) {
-      throw new BadRequestException("Payment must be received (PAID) before processing");
+      throw new BadRequestException(
+        `Cannot process order: payment_status must be PAID (current: ${order.paymentStatus})`
+      );
     }
     const updated = await this.prisma.order.update({
       where: { id: order.id },

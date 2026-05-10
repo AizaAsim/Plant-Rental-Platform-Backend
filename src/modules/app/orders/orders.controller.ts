@@ -29,6 +29,7 @@ import {
   customerDeliveryResponseApiBody,
   customerReturnResponseApiBody,
   proposeDeliverySlotsApiBody,
+  vendorRejectOrderApiBody,
   vendorCompleteReturnApiBody,
   vendorInitiateReturnApiBody,
 } from "./order-workflow.swagger";
@@ -525,6 +526,7 @@ export class OrdersController {
   @Roles(UserRole.VENDOR)
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
+  @ApiBody(vendorRejectOrderApiBody)
   @ApiOperation({ summary: "Reject order" })
   @ApiParam({ name: "order_id", description: "Order ID" })
   @ApiResponse({

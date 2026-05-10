@@ -135,6 +135,40 @@ export const customerDeliveryResponseApiBody: ApiBodyOptions = {
   },
 };
 
+export const vendorRejectOrderApiBody: ApiBodyOptions = {
+  description:
+    "Rejected only in pre-fulfillment states (e.g. PENDING through AWAITING_PAYMENT). Server requires a non-empty reason — " +
+    "use **`reason`**, or alternatively **`rejection_reason`** / **`cancellation_reason`** (same rules: 3–2000 trimmed characters).",
+  schema: {
+    type: "object",
+    properties: {
+      reason: {
+        type: "string",
+        minLength: 3,
+        maxLength: 2000,
+        example: "Out of stock for selected plants until next shipment",
+      },
+      rejection_reason: { type: "string", description: "Alias of reason" },
+      cancellation_reason: { type: "string", description: "Alias of reason" },
+    },
+    anyOf: [
+      { required: ["reason"] },
+      { required: ["rejection_reason"] },
+      { required: ["cancellation_reason"] },
+    ],
+  },
+  examples: {
+    reason: {
+      summary: "Primary field",
+      value: { reason: "Unable to fulfil delivery window requested" },
+    },
+    alias: {
+      summary: "rejection_reason",
+      value: { rejection_reason: "Inventory mismatch after slot confirmation" },
+    },
+  },
+};
+
 export const vendorInitiateReturnApiBody: ApiBodyOptions = {
   description:
     "Merges pickup slot options under `workflowMeta.return` (same slot shape id pattern SLOT-RET-… server-side).",
