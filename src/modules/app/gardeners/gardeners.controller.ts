@@ -22,6 +22,7 @@ import {
   ApiBearerAuth,
 } from "@nestjs/swagger";
 import { GardenersService } from "./gardeners.service";
+import { GardenerOnboardingService } from "./gardener-onboarding.service";
 import { JwtAuthGuard } from "../auth/guard/jwt-auth.guard";
 import { RolesGuard } from "../auth/guard/roles.guard";
 import { Roles } from "../auth/decorators/roles.decorator";
@@ -30,7 +31,10 @@ import { UserRole } from "@prisma/client";
 @ApiTags("Gardeners")
 @Controller("api/v1/gardeners")
 export class GardenersController {
-  constructor(private readonly gardenersService: GardenersService) {}
+  constructor(
+    private readonly gardenersService: GardenersService,
+    private readonly gardenerOnboardingService: GardenerOnboardingService
+  ) {}
 
   // ─── Gardener: own profile routes (static — BEFORE /:gardener_id) ──────────
 
@@ -183,6 +187,30 @@ export class GardenersController {
   @ApiResponse({ status: 200, description: "Skills retrieved successfully" })
   async getAllSkills() {
     return this.gardenersService.getAllSkills();
+  }
+
+  @Get("onboarding")
+  @ApiTags("Gardeners", "Gardener onboarding")
+  @ApiOperation({
+    summary:
+      "Catalog: vendor staff-gardeners CRUD vs freelance self-serve vs public discovery (static JSON for API docs / mobile)",
+  })
+  @ApiResponse({ status: 200, description: "Onboarding flow map" })
+  getGardenerOnboardingCatalog() {
+    return this.gardenerOnboardingService.getCatalog();
+  }
+
+  @Get("onboarding/me")
+  @ApiTags("Gardeners", "Gardener onboarding")
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.GARDENER)
+  @ApiBearerAuth("bearer")
+  @ApiOperation({
+    summary: "Current gardener: staff vs freelance path hints and recommended next step",
+  })
+  @ApiResponse({ status: 200, description: "Onboarding status for this gardener" })
+  getGardenerOnboardingMe(@Request() req: { user: { id: string; role: UserRole } }) {
+    return this.gardenerOnboardingService.getSelfStatus(req.user.id, req.user.role);
   }
 
   // ─── Parameterised routes LAST ──────────────────────────────────────────────

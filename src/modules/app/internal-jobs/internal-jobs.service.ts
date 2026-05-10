@@ -1,15 +1,77 @@
-import { Injectable } from "@nestjs/common";
+import { Injectable, Logger } from "@nestjs/common";
+import { OrderStatus, PaymentStatus } from "@prisma/client";
 import { PrismaService } from "src/prisma/prisma.service";
 import { contractOk } from "src/common/contract/response";
-import { OrderStatus, PaymentStatus } from "@prisma/client";
+
+export type ExpireReason = "PAYMENT_TIMEOUT" | "SLOT_SELECTION_EXPIRED" | "PAYMENT_WINDOW_EXPIRED";
 
 @Injectable()
 export class InternalJobsService {
+  private readonly log = new Logger(InternalJobsService.name);
+
   constructor(private readonly prisma: PrismaService) {}
 
+  private getMeta(raw: unknown): Record<string, unknown> {
+    if (raw && typeof raw === "object" && !Array.isArray(raw)) return raw as Record<string, unknown>;
+    return {};
+  }
+
+  private allowedSourceStatuses(reason: ExpireReason): OrderStatus[] {
+    switch (reason) {
+      case "PAYMENT_TIMEOUT":
+        return [OrderStatus.PENDING];
+      case "SLOT_SELECTION_EXPIRED":
+        return [OrderStatus.SLOT_PROPOSED];
+      case "PAYMENT_WINDOW_EXPIRED":
+        return [OrderStatus.SLOT_CONFIRMED, OrderStatus.AWAITING_PAYMENT];
+      default:
+        return [];
+    }
+  }
+
+  /**
+   * Terminal EXPIRED + release stock (units reserved at checkout). Idempotent under concurrent runs.
+   */
+  async expireOrderWithStockRelease(
+    orderId: string,
+    reason: ExpireReason
+  ): Promise<{ ok: boolean; skipped?: string }> {
+    const order = await this.prisma.order.findUnique({
+      where: { id: orderId },
+      include: { items: true },
+    });
+    if (!order) return { ok: false, skipped: "not_found" };
+
+    const allowed = this.allowedSourceStatuses(reason);
+    if (!allowed.includes(order.status)) return { ok: false, skipped: `status_${order.status}` };
+
+    let transitioned = false;
+    await this.prisma.$transaction(async (tx) => {
+      const u = await tx.order.updateMany({
+        where: { id: orderId, status: { in: allowed } },
+        data: {
+          status: OrderStatus.EXPIRED,
+          cancellationReason: reason,
+          cancelledAt: new Date(),
+        },
+      });
+      if (u.count === 0) return;
+      transitioned = true;
+      for (const item of order.items) {
+        await tx.plant.update({
+          where: { id: item.plantId },
+          data: { stockQuantity: { increment: item.quantity } },
+        });
+      }
+    });
+
+    return transitioned ? { ok: true } : { ok: false, skipped: "race_or_duplicate" };
+  }
+
+  /** Unpaid checkout past window — default 6h from order creation. */
   async expireUnpaid(body: Record<string, unknown>) {
     const dryRun = body.dry_run === true;
-    const hours = Number(body.window_hours ?? 6);
+    const hours = Number(body.window_hours ?? process.env.ORDER_UNPAID_EXPIRY_HOURS ?? 6);
     const cut = new Date(Date.now() - hours * 3600 * 1000);
     const candidates = await this.prisma.order.findMany({
       where: {
@@ -21,15 +83,78 @@ export class InternalJobsService {
       take: 200,
     });
     if (dryRun) {
-      return contractOk({ would_cancel: candidates.length, order_numbers: candidates.map((c) => c.orderNumber) });
-    }
-    for (const c of candidates) {
-      await this.prisma.order.update({
-        where: { id: c.id },
-        data: { status: OrderStatus.CANCELLED, cancellationReason: "PAYMENT_TIMEOUT" },
+      return contractOk({
+        would_expire: candidates.length,
+        order_numbers: candidates.map((c) => c.orderNumber),
+        window_hours: hours,
       });
     }
-    return contractOk({ cancelled: candidates.length });
+    let expired = 0;
+    for (const c of candidates) {
+      const r = await this.expireOrderWithStockRelease(c.id, "PAYMENT_TIMEOUT");
+      if (r.ok) expired += 1;
+    }
+    return contractOk({ expired, candidates: candidates.length, window_hours: hours });
+  }
+
+  /** `workflowMeta.delivery.slotExpiresAt` passed (set when vendor proposes). */
+  async expireStaleSlotProposals(body: Record<string, unknown>) {
+    const dryRun = body.dry_run === true;
+    const rows = await this.prisma.order.findMany({
+      where: { status: OrderStatus.SLOT_PROPOSED },
+      select: { id: true, orderNumber: true, workflowMeta: true },
+      take: 400,
+    });
+    const now = Date.now();
+    const due: { id: string; orderNumber: string }[] = [];
+    for (const r of rows) {
+      const m = this.getMeta(r.workflowMeta);
+      const del = m.delivery as Record<string, unknown> | undefined;
+      const slotExpiresAt = del?.slotExpiresAt;
+      if (typeof slotExpiresAt !== "string") continue;
+      if (new Date(slotExpiresAt).getTime() > now) continue;
+      due.push({ id: r.id, orderNumber: r.orderNumber });
+    }
+    if (dryRun) {
+      return contractOk({ would_expire: due.length, order_numbers: due.map((d) => d.orderNumber) });
+    }
+    let expired = 0;
+    for (const d of due) {
+      const r = await this.expireOrderWithStockRelease(d.id, "SLOT_SELECTION_EXPIRED");
+      if (r.ok) expired += 1;
+    }
+    return contractOk({ expired, scanned: rows.length, due: due.length });
+  }
+
+  /** `workflowMeta.paymentWindowExpiresAt` passed (set on slot confirm / payment initiate). */
+  async expireStalePaymentWindows(body: Record<string, unknown>) {
+    const dryRun = body.dry_run === true;
+    const rows = await this.prisma.order.findMany({
+      where: {
+        status: { in: [OrderStatus.SLOT_CONFIRMED, OrderStatus.AWAITING_PAYMENT] },
+        paymentStatus: PaymentStatus.PENDING,
+      },
+      select: { id: true, orderNumber: true, workflowMeta: true },
+      take: 400,
+    });
+    const now = Date.now();
+    const due: { id: string; orderNumber: string }[] = [];
+    for (const r of rows) {
+      const m = this.getMeta(r.workflowMeta);
+      const exp = m.paymentWindowExpiresAt;
+      if (typeof exp !== "string") continue;
+      if (new Date(exp).getTime() > now) continue;
+      due.push({ id: r.id, orderNumber: r.orderNumber });
+    }
+    if (dryRun) {
+      return contractOk({ would_expire: due.length, order_numbers: due.map((d) => d.orderNumber) });
+    }
+    let expired = 0;
+    for (const d of due) {
+      const r = await this.expireOrderWithStockRelease(d.id, "PAYMENT_WINDOW_EXPIRED");
+      if (r.ok) expired += 1;
+    }
+    return contractOk({ expired, scanned: rows.length, due: due.length });
   }
 
   async dueReminders(body: Record<string, unknown>) {
@@ -39,5 +164,24 @@ export class InternalJobsService {
 
   async autoMatch(body: Record<string, unknown>) {
     return contractOk({ job_id: body.job_id, message: "Auto-match engine not enabled in this build" });
+  }
+
+  /** Cron + manual: run unpaid checkout, slot, and payment-window expirers. */
+  async runOrderExpirySweep() {
+    const unpaid = await this.expireUnpaid({ dry_run: false });
+    const slots = await this.expireStaleSlotProposals({ dry_run: false });
+    const pay = await this.expireStalePaymentWindows({ dry_run: false });
+    const u = unpaid as { data?: { expired?: number; would_expire?: number } };
+    const s = slots as { data?: { expired?: number; would_expire?: number } };
+    const p = pay as { data?: { expired?: number; would_expire?: number } };
+    this.log.log(
+      `expiry sweep unpaid=${u.data?.expired ?? u.data?.would_expire} slot=${s.data?.expired ?? s.data?.would_expire} pay=${p.data?.expired ?? p.data?.would_expire}`
+    );
+    return contractOk({
+      at: new Date().toISOString(),
+      unpaid: u.data,
+      slots: s.data,
+      payment_windows: p.data,
+    });
   }
 }

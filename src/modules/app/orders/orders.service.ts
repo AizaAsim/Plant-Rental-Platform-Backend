@@ -6,6 +6,7 @@ import {
   ForbiddenException,
 } from "@nestjs/common";
 import {
+  OrderItem,
   Prisma,
   OrderStatus,
   OrderType,
@@ -17,6 +18,15 @@ import {
 import { PrismaService } from "src/prisma/prisma.service";
 import { Decimal } from "@prisma/client/runtime/library";
 import { CartService } from "../cart/cart.service";
+import {
+  VendorRentalBucket,
+  VENDOR_RENTAL_BUCKETS,
+} from "./vendor-rental-buckets";
+import { resolveOrderId } from "src/common/contract/resolve-entity";
+import {
+  tryFulfillmentLineCondition,
+  FULFILLMENT_LINE_CONDITIONS,
+} from "./fulfillment-line.constants";
 
 @Injectable()
 export class OrdersService {
@@ -29,6 +39,253 @@ export class OrdersService {
     const timestamp = Date.now();
     const random = Math.floor(Math.random() * 1000);
     return `ORD-${timestamp}-${random}`;
+  }
+
+  /** Query params arrive as strings — Prisma requires numeric skip/take. */
+  private normalizePaging(filterDto: { page?: unknown; limit?: unknown }, defaultLimit = 20) {
+    const pageNum = Math.max(1, Number.parseInt(String(filterDto.page ?? 1), 10) || 1);
+    let limitNum = Number.parseInt(String(filterDto.limit ?? defaultLimit), 10);
+    if (!Number.isFinite(limitNum) || limitNum < 1) limitNum = defaultLimit;
+    limitNum = Math.min(limitNum, 100);
+    const skip = (pageNum - 1) * limitNum;
+    return { pageNum, limitNum, skip };
+  }
+
+  private coerceProofUrlsJson(raw: unknown): Prisma.InputJsonValue | undefined {
+    if (raw == null) return undefined;
+    if (!Array.isArray(raw)) {
+      throw new BadRequestException("proof_image_urls must be an array when provided");
+    }
+    return raw as Prisma.InputJsonValue;
+  }
+
+  private parseOptionalIsoInstant(raw: unknown, fieldLabel: string): Date | undefined {
+    if (raw == null || String(raw).trim() === "") return undefined;
+    const d = new Date(String(raw));
+    if (Number.isNaN(d.getTime())) {
+      throw new BadRequestException(`${fieldLabel} must be a valid ISO date-time`);
+    }
+    return d;
+  }
+
+  private mapFulfillmentLine(oi: OrderItem) {
+    return {
+      order_item_id: oi.id,
+      plant_id: oi.plantId,
+      order_type: oi.orderType,
+      quantity: oi.quantity,
+      rental_status: oi.rentalStatus,
+      delivery: {
+        proof_at: oi.deliveryProofAt?.toISOString() ?? null,
+        condition: oi.deliveryCondition,
+        proof_urls: oi.deliveryProofUrls ?? null,
+        notes: oi.deliveryLineNotes,
+      },
+      return: {
+        proof_at: oi.returnProofAt?.toISOString() ?? null,
+        condition: oi.returnCondition,
+        proof_urls: oi.returnProofUrls ?? null,
+        notes: oi.returnLineNotes,
+        restocked: oi.restocked,
+        restocked_at: oi.restockedAt?.toISOString() ?? null,
+        actual_return_date: oi.actualReturnDate?.toISOString().slice(0, 10) ?? null,
+      },
+    };
+  }
+
+  private proofImageCountFromJson(urls: unknown): number {
+    return Array.isArray(urls) ? urls.length : 0;
+  }
+
+  /** Recursively replace proof URL arrays under common keys for customer responses. */
+  private redactWorkflowMetaForCustomer(raw: unknown): unknown {
+    if (raw == null) return null;
+    if (Array.isArray(raw)) return raw.map((x) => this.redactWorkflowMetaForCustomer(x));
+    if (typeof raw !== "object") return raw;
+    const o = raw as Record<string, unknown>;
+    const out: Record<string, unknown> = {};
+    const redactKeys = new Set([
+      "proof_image_urls",
+      "proof_urls",
+      "delivery_proof_urls",
+      "return_proof_urls",
+    ]);
+    for (const [k, v] of Object.entries(o)) {
+      if (redactKeys.has(k) && Array.isArray(v)) {
+        out[k] = { redacted: true, count: v.length };
+      } else {
+        out[k] = this.redactWorkflowMetaForCustomer(v) as unknown;
+      }
+    }
+    return out;
+  }
+
+  private mapFulfillmentLineCustomer(oi: OrderItem) {
+    return {
+      order_item_id: oi.id,
+      plant_id: oi.plantId,
+      order_type: oi.orderType,
+      quantity: oi.quantity,
+      rental_status: oi.rentalStatus,
+      delivery: {
+        proof_at: oi.deliveryProofAt?.toISOString() ?? null,
+        condition: oi.deliveryCondition,
+        proof_urls_redacted: true,
+        proof_image_count: this.proofImageCountFromJson(oi.deliveryProofUrls),
+        notes: oi.deliveryLineNotes,
+      },
+      return: {
+        proof_at: oi.returnProofAt?.toISOString() ?? null,
+        condition: oi.returnCondition,
+        proof_urls_redacted: true,
+        proof_image_count: this.proofImageCountFromJson(oi.returnProofUrls),
+        notes: oi.returnLineNotes,
+        restocked: oi.restocked,
+        restocked_at: oi.restockedAt?.toISOString() ?? null,
+        actual_return_date: oi.actualReturnDate?.toISOString().slice(0, 10) ?? null,
+      },
+    };
+  }
+
+  /** Midnight-based calendar-day bounds in the server's local timezone. */
+  private rentalCalendarBounds() {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const tomorrow = new Date(today);
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    return { today, tomorrow };
+  }
+
+  private vendorRentalsDefaultInclude(): Prisma.OrderItemInclude {
+    return {
+      plant: true,
+      order: {
+        include: {
+          user: {
+            select: {
+              id: true,
+              fullName: true,
+              email: true,
+              phone: true,
+            },
+          },
+          deliveryAddress: true,
+        },
+      },
+    };
+  }
+
+  private vendorRentalWhereClause(
+    nurseryId: string,
+    bucket: VendorRentalBucket,
+    bounds: { today: Date; tomorrow: Date }
+  ): Prisma.OrderItemWhereInput {
+    const baseOrder: Prisma.OrderWhereInput = { nurseryId };
+    if (bucket === "COMPLETED") {
+      return {
+        order: baseOrder,
+        orderType: OrderType.RENT,
+        rentalStatus: RentalStatus.RETURNED,
+      };
+    }
+    if (bucket === "ONGOING") {
+      return {
+        order: baseOrder,
+        orderType: OrderType.RENT,
+        rentalStatus: { in: [RentalStatus.ACTIVE, RentalStatus.EXTENDED] },
+        OR: [{ rentEndDate: null }, { rentEndDate: { gte: bounds.tomorrow } }],
+      };
+    }
+    if (bucket === "DUE_TODAY") {
+      return {
+        order: baseOrder,
+        orderType: OrderType.RENT,
+        rentalStatus: { in: [RentalStatus.ACTIVE, RentalStatus.EXTENDED] },
+        rentEndDate: { gte: bounds.today, lt: bounds.tomorrow },
+      };
+    }
+    return {
+      order: baseOrder,
+      orderType: OrderType.RENT,
+      OR: [
+        { rentalStatus: RentalStatus.OVERDUE },
+        {
+          rentalStatus: { in: [RentalStatus.ACTIVE, RentalStatus.EXTENDED] },
+          rentEndDate: { not: null, lt: bounds.today },
+        },
+      ],
+    };
+  }
+
+  private normalizeVendorRentalBucket(raw?: unknown): VendorRentalBucket {
+    const s = String(raw ?? "ONGOING")
+      .trim()
+      .toUpperCase();
+    if ((VENDOR_RENTAL_BUCKETS as readonly string[]).includes(s)) {
+      return s as VendorRentalBucket;
+    }
+    throw new BadRequestException(
+      `Invalid bucket; use one of: ${VENDOR_RENTAL_BUCKETS.join(", ")}`
+    );
+  }
+
+  async getVendorRentalsByBucket(
+    vendorId: string,
+    q: { bucket?: string; page?: string; limit?: string }
+  ) {
+    const nursery = await this.prisma.nursery.findUnique({
+      where: { vendorId },
+    });
+
+    if (!nursery) {
+      throw new NotFoundException("Nursery not found");
+    }
+
+    const bounds = this.rentalCalendarBounds();
+    const bucket = this.normalizeVendorRentalBucket(q.bucket);
+    const { pageNum, limitNum, skip } = this.normalizePaging(q, 20);
+    const where = this.vendorRentalWhereClause(nursery.id, bucket, bounds);
+
+    const [ongoing, dueToday, overdue, completed, items, total] =
+      await this.prisma.$transaction([
+        this.prisma.orderItem.count({
+          where: this.vendorRentalWhereClause(nursery.id, "ONGOING", bounds),
+        }),
+        this.prisma.orderItem.count({
+          where: this.vendorRentalWhereClause(nursery.id, "DUE_TODAY", bounds),
+        }),
+        this.prisma.orderItem.count({
+          where: this.vendorRentalWhereClause(nursery.id, "OVERDUE", bounds),
+        }),
+        this.prisma.orderItem.count({
+          where: this.vendorRentalWhereClause(nursery.id, "COMPLETED", bounds),
+        }),
+        this.prisma.orderItem.findMany({
+          where,
+          skip,
+          take: limitNum,
+          include: this.vendorRentalsDefaultInclude(),
+          orderBy: { rentEndDate: "asc" },
+        }),
+        this.prisma.orderItem.count({ where }),
+      ]);
+
+    return {
+      bucket,
+      counts: {
+        ongoing,
+        due_today: dueToday,
+        overdue,
+        completed,
+      },
+      items,
+      pagination: {
+        page: pageNum,
+        limit: limitNum,
+        total,
+        totalPages: Math.ceil(total / limitNum) || 0,
+      },
+    };
   }
 
   // POST /api/v1/orders/checkout
@@ -393,14 +650,8 @@ export class OrdersService {
 
   // GET /api/v1/orders
   async getUserOrders(userId: string, filterDto: any) {
-    const {
-      page = 1,
-      limit = 20,
-      status,
-      order_type,
-      date_from,
-      date_to,
-    } = filterDto;
+    const { status, order_type, date_from, date_to } = filterDto;
+    const { pageNum, limitNum, skip } = this.normalizePaging(filterDto, 20);
 
     const where: Prisma.OrderWhereInput = {
       userId,
@@ -410,13 +661,11 @@ export class OrdersService {
       ...(date_to && { createdAt: { lte: new Date(date_to) } }),
     };
 
-    const skip = (page - 1) * limit;
-
     const [orders, total] = await Promise.all([
       this.prisma.order.findMany({
         where,
         skip,
-        take: limit,
+        take: limitNum,
         include: {
           items: {
             include: {
@@ -446,10 +695,10 @@ export class OrdersService {
     return {
       items: orders,
       pagination: {
-        page,
-        limit,
+        page: pageNum,
+        limit: limitNum,
         total,
-        totalPages: Math.ceil(total / limit),
+        totalPages: Math.ceil(total / limitNum) || 0,
       },
     };
   }
@@ -604,7 +853,11 @@ export class OrdersService {
       throw new NotFoundException("Order not found");
     }
 
-    if (!["PENDING", "CONFIRMED", "SLOT_PROPOSED"].includes(order.status)) {
+    if (
+      !["PENDING", "CONFIRMED", "SLOT_PROPOSED", "SLOT_CONFIRMED", "AWAITING_PAYMENT"].includes(
+        order.status
+      )
+    ) {
       throw new BadRequestException("Order cannot be cancelled at this stage");
     }
 
@@ -830,14 +1083,8 @@ export class OrdersService {
       throw new NotFoundException("Nursery not found");
     }
 
-    const {
-      page = 1,
-      limit = 20,
-      status,
-      order_type,
-      date_from,
-      date_to,
-    } = filterDto;
+    const { status, order_type, date_from, date_to } = filterDto;
+    const { pageNum, limitNum, skip } = this.normalizePaging(filterDto, 20);
 
     const where: Prisma.OrderWhereInput = {
       nurseryId: nursery.id,
@@ -847,13 +1094,11 @@ export class OrdersService {
       ...(date_to && { createdAt: { lte: new Date(date_to) } }),
     };
 
-    const skip = (page - 1) * limit;
-
     const [orders, total] = await Promise.all([
       this.prisma.order.findMany({
         where,
         skip,
-        take: limit,
+        take: limitNum,
         include: {
           items: {
             include: {
@@ -878,10 +1123,10 @@ export class OrdersService {
     return {
       items: orders,
       pagination: {
-        page,
-        limit,
+        page: pageNum,
+        limit: limitNum,
         total,
-        totalPages: Math.ceil(total / limit),
+        totalPages: Math.ceil(total / limitNum) || 0,
       },
     };
   }
@@ -959,11 +1204,14 @@ export class OrdersService {
       PENDING: [OrderStatus.CONFIRMED, OrderStatus.CANCELLED],
       CONFIRMED: [OrderStatus.PROCESSING, OrderStatus.CANCELLED],
       SLOT_PROPOSED: [OrderStatus.CANCELLED],
+      SLOT_CONFIRMED: [OrderStatus.CANCELLED],
+      AWAITING_PAYMENT: [OrderStatus.CANCELLED],
       PROCESSING: [OrderStatus.OUT_FOR_DELIVERY],
       OUT_FOR_DELIVERY: [OrderStatus.DELIVERED],
       DELIVERED: [OrderStatus.COMPLETED],
       COMPLETED: [],
       CANCELLED: [],
+      EXPIRED: [],
       RETURNED: [],
     };
 
@@ -1267,8 +1515,11 @@ export class OrdersService {
     };
   }
 
-  // GET /api/v1/vendor/rentals/active
-  async getActiveRentals(vendorId: string, filterDto: any) {
+  /**
+   * Legacy: GET /api/v1/orders/vendor/rentals/active
+   * Prefer {@link getVendorRentalsByBucket}: GET /api/v1/vendor/rentals?bucket=ON…
+   */
+  async getActiveRentals(vendorId: string, filterDto: unknown) {
     const nursery = await this.prisma.nursery.findUnique({
       where: { vendorId },
     });
@@ -1277,57 +1528,32 @@ export class OrdersService {
       throw new NotFoundException("Nursery not found");
     }
 
-    const { page = 1, limit = 20, status } = filterDto;
+    const f = filterDto as { status?: string; page?: string; limit?: string };
+    const { status } = f;
+    const { pageNum, limitNum, skip } = this.normalizePaging(f, 20);
+    const bounds = this.rentalCalendarBounds();
 
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    const tomorrow = new Date(today);
-    tomorrow.setDate(tomorrow.getDate() + 1);
-
-    const where: Prisma.OrderItemWhereInput = {
-      order: {
-        nurseryId: nursery.id,
-      },
-      orderType: OrderType.RENT,
-      rentalStatus: {
-        in: status === "OVERDUE" ? [RentalStatus.ACTIVE, RentalStatus.EXTENDED] : [RentalStatus.ACTIVE, RentalStatus.EXTENDED],
-      },
-      ...(status === "OVERDUE" && {
-        rentEndDate: {
-          lt: new Date(),
+    let where: Prisma.OrderItemWhereInput;
+    if (status === "OVERDUE") {
+      where = this.vendorRentalWhereClause(nursery.id, "OVERDUE", bounds);
+    } else if (status === "DUE_TODAY") {
+      where = this.vendorRentalWhereClause(nursery.id, "DUE_TODAY", bounds);
+    } else {
+      where = {
+        order: { nurseryId: nursery.id },
+        orderType: OrderType.RENT,
+        rentalStatus: {
+          in: [RentalStatus.ACTIVE, RentalStatus.EXTENDED, RentalStatus.OVERDUE],
         },
-      }),
-      ...(status === "DUE_TODAY" && {
-        rentEndDate: {
-          gte: today,
-          lt: tomorrow,
-        },
-      }),
-    };
-
-    const skip = (page - 1) * limit;
+      };
+    }
 
     const [items, total] = await Promise.all([
       this.prisma.orderItem.findMany({
         where,
         skip,
-        take: limit,
-        include: {
-          plant: true,
-          order: {
-            include: {
-              user: {
-                select: {
-                  id: true,
-                  fullName: true,
-                  email: true,
-                  phone: true,
-                },
-              },
-              deliveryAddress: true,
-            },
-          },
-        },
+        take: limitNum,
+        include: this.vendorRentalsDefaultInclude(),
         orderBy: { rentEndDate: "asc" },
       }),
       this.prisma.orderItem.count({ where }),
@@ -1336,10 +1562,10 @@ export class OrdersService {
     return {
       items,
       pagination: {
-        page,
-        limit,
+        page: pageNum,
+        limit: limitNum,
         total,
-        totalPages: Math.ceil(total / limit),
+        totalPages: Math.ceil(total / limitNum) || 0,
       },
     };
   }
@@ -1375,17 +1601,19 @@ export class OrdersService {
     return { items };
   }
 
-  private async requireVendorOrder(vendorId: string, orderId: string) {
+  private async requireVendorOrder(vendorId: string, orderIdOrNumber: string) {
+    const orderIdResolved = await resolveOrderId(this.prisma, orderIdOrNumber);
+    if (!orderIdResolved) throw new NotFoundException("Order not found");
     const nursery = await this.prisma.nursery.findUnique({
       where: { vendorId },
     });
     if (!nursery) throw new NotFoundException("Nursery not found");
     const order = await this.prisma.order.findFirst({
-      where: { id: orderId, nurseryId: nursery.id },
+      where: { id: orderIdResolved, nurseryId: nursery.id },
       include: { items: true },
     });
     if (!order) throw new NotFoundException("Order not found");
-    return { nursery, order };
+    return { nursery, order, orderIdResolved };
   }
 
   /** GET /api/v1/orders/vendor/orders/:order_id/payment-status */
@@ -1439,7 +1667,7 @@ export class OrdersService {
     }
 
     const updated = await this.prisma.order.update({
-      where: { id: orderId },
+      where: { id: order.id },
       data: {
         status: OrderStatus.CONFIRMED,
         vendorApprovalSelections: selections as unknown as Prisma.InputJsonValue,
@@ -1474,7 +1702,7 @@ export class OrdersService {
       throw new BadRequestException("Payment must be received (PAID) before processing");
     }
     const updated = await this.prisma.order.update({
-      where: { id: orderId },
+      where: { id: order.id },
       data: { status: OrderStatus.PROCESSING },
       include: { items: true, user: { select: { id: true, fullName: true } } },
     });
@@ -1492,16 +1720,7 @@ export class OrdersService {
   }
 
   /** POST /api/v1/orders/vendor/orders/:order_id/complete-delivery */
-  async vendorCompleteDelivery(
-    vendorId: string,
-    orderId: string,
-    handover?: {
-      actual_start_date?: string;
-      actual_start_time?: string;
-      delivery_notes?: string;
-      proof_image_urls?: string[];
-    }
-  ) {
+  async vendorCompleteDelivery(vendorId: string, orderId: string, body?: Record<string, unknown>) {
     const { order } = await this.requireVendorOrder(vendorId, orderId);
     if (
       order.status !== OrderStatus.PROCESSING &&
@@ -1511,20 +1730,59 @@ export class OrdersService {
         "Order must be in PROCESSING or OUT_FOR_DELIVERY to complete delivery"
       );
     }
+    const raw = body ?? {};
+    const lineRows = Array.isArray(raw.line_items)
+      ? (raw.line_items as Record<string, unknown>[])
+      : null;
+    const rentLines = order.items.filter((i) => i.orderType === OrderType.RENT);
+
+    if (lineRows != null) {
+      if (lineRows.length !== rentLines.length) {
+        throw new BadRequestException(
+          `line_items must include exactly ${rentLines.length} rental line(s) for this order`
+        );
+      }
+      const expected = new Set(rentLines.map((r) => r.id));
+      const seen = new Set<string>();
+      for (const row of lineRows) {
+        const lid = String(row.order_item_id ?? "");
+        if (!expected.has(lid) || seen.has(lid)) {
+          throw new BadRequestException(
+            "line_items.order_item_id values must match rental lines one-to-one"
+          );
+        }
+        seen.add(lid);
+      }
+    }
+
+    const { line_items: _drop, ...orderLevelMeta } = raw;
+    const hasOrderLevelMeta = Object.keys(orderLevelMeta).length > 0;
+
     const now = new Date();
     const prevMeta =
       order.workflowMeta && typeof order.workflowMeta === "object"
         ? (order.workflowMeta as Record<string, unknown>)
         : {};
 
+    const deliveryCompletionMeta =
+      hasOrderLevelMeta || lineRows != null
+        ? {
+            ...orderLevelMeta,
+            ...(lineRows != null ? { proof_per_line_sealed_at: now.toISOString() } : {}),
+          }
+        : null;
+
+    const lineById =
+      lineRows != null ? new Map(lineRows.map((row) => [String(row.order_item_id ?? ""), row])) : null;
+
     await this.prisma.$transaction(async (tx) => {
-      if (handover && Object.keys(handover).length) {
+      if (deliveryCompletionMeta != null) {
         await tx.order.update({
-          where: { id: orderId },
+          where: { id: order.id },
           data: {
             workflowMeta: {
               ...prevMeta,
-              deliveryCompletion: handover,
+              deliveryCompletion: deliveryCompletionMeta,
             } as object,
           },
         });
@@ -1539,17 +1797,38 @@ export class OrdersService {
         const start = new Date(now);
         const end = new Date(now);
         end.setUTCDate(end.getUTCDate() + days);
+
+        const extras = lineById?.get(item.id);
+        let deliveryPatch: Prisma.OrderItemUpdateInput = {};
+        if (extras) {
+          const cond = tryFulfillmentLineCondition(extras.condition);
+          if (!cond) {
+            throw new BadRequestException(
+              `Invalid delivery condition for line ${item.id}; allowed: ${FULFILLMENT_LINE_CONDITIONS.join(", ")}`
+            );
+          }
+          const proofAt =
+            this.parseOptionalIsoInstant(extras.proof_at, "line_items[].proof_at") ?? now;
+          deliveryPatch = {
+            deliveryProofAt: proofAt,
+            deliveryCondition: cond,
+            deliveryProofUrls: this.coerceProofUrlsJson(extras.proof_image_urls),
+            deliveryLineNotes: extras.notes != null ? String(extras.notes) : null,
+          };
+        }
+
         await tx.orderItem.update({
           where: { id: item.id },
           data: {
             rentalStatus: RentalStatus.ACTIVE,
             rentStartDate: start,
             rentEndDate: end,
+            ...deliveryPatch,
           },
         });
       }
       await tx.order.update({
-        where: { id: orderId },
+        where: { id: order.id },
         data: {
           status: OrderStatus.DELIVERED,
           deliveredAt: now,
@@ -1558,7 +1837,7 @@ export class OrdersService {
     });
 
     const full = await this.prisma.order.findUnique({
-      where: { id: orderId },
+      where: { id: order.id },
       include: {
         items: { include: { plant: true } },
         user: { select: { id: true, fullName: true, email: true } },
@@ -1577,5 +1856,93 @@ export class OrdersService {
     });
 
     return full;
+  }
+
+  /** GET /api/v1/orders/vendor/orders/:order_id/fulfillment-audit */
+  async getVendorFulfillmentAudit(vendorId: string, orderId: string) {
+    const { order } = await this.requireVendorOrder(vendorId, orderId);
+    const meta =
+      order.workflowMeta && typeof order.workflowMeta === "object"
+        ? (order.workflowMeta as Record<string, unknown>)
+        : {};
+    return {
+      order_id: order.id,
+      order_number: order.orderNumber,
+      order_status: order.status,
+      delivered_at: order.deliveredAt?.toISOString() ?? null,
+      workflow_meta_snapshot: {
+        delivery: meta.delivery ?? null,
+        delivery_completion: meta.deliveryCompletion ?? null,
+        return: meta.return ?? null,
+      },
+      items: order.items.map((oi) => this.mapFulfillmentLine(oi)),
+    };
+  }
+
+  /** GET …/line-items/:order_item_id/fulfillment */
+  async getVendorLineFulfillment(vendorId: string, orderId: string, orderItemId: string) {
+    const { order } = await this.requireVendorOrder(vendorId, orderId);
+    const oi = order.items.find((i) => i.id === orderItemId);
+    if (!oi) {
+      throw new NotFoundException("Order item not found on this order");
+    }
+    return {
+      order_id: order.id,
+      order_number: order.orderNumber,
+      item: this.mapFulfillmentLine(oi),
+    };
+  }
+
+  /** GET /api/v1/orders/:order_id/fulfillment-summary (customer — proof URLs redacted) */
+  async getCustomerFulfillmentSummary(userId: string, orderIdOrNum: string) {
+    const oid = await resolveOrderId(this.prisma, orderIdOrNum);
+    if (!oid) throw new NotFoundException("Order not found");
+    const order = await this.prisma.order.findFirst({
+      where: { id: oid, userId },
+      include: { items: true },
+    });
+    if (!order) throw new NotFoundException("Order not found");
+    const meta =
+      order.workflowMeta && typeof order.workflowMeta === "object"
+        ? (order.workflowMeta as Record<string, unknown>)
+        : {};
+    return {
+      audience: "customer",
+      proof_media_policy:
+        "Image URLs are not exposed; counts and timestamps reflect vendor-recorded proof-of-delivery and returns.",
+      order_id: order.id,
+      order_number: order.orderNumber,
+      order_status: order.status,
+      delivered_at: order.deliveredAt?.toISOString() ?? null,
+      workflow_meta_snapshot: {
+        delivery: this.redactWorkflowMetaForCustomer(meta.delivery),
+        delivery_completion: this.redactWorkflowMetaForCustomer(meta.deliveryCompletion),
+        return: this.redactWorkflowMetaForCustomer(meta.return),
+      },
+      items: order.items.map((oi) => this.mapFulfillmentLineCustomer(oi)),
+    };
+  }
+
+  /** GET …/line-items/:order_item_id/fulfillment-summary (customer) */
+  async getCustomerLineFulfillmentSummary(
+    userId: string,
+    orderIdOrNum: string,
+    orderItemId: string
+  ) {
+    const oid = await resolveOrderId(this.prisma, orderIdOrNum);
+    if (!oid) throw new NotFoundException("Order not found");
+    const order = await this.prisma.order.findFirst({
+      where: { id: oid, userId },
+      include: { items: true },
+    });
+    if (!order) throw new NotFoundException("Order not found");
+    const oi = order.items.find((i) => i.id === orderItemId);
+    if (!oi) throw new NotFoundException("Order item not found on this order");
+    return {
+      audience: "customer",
+      order_id: order.id,
+      order_number: order.orderNumber,
+      item: this.mapFulfillmentLineCustomer(oi),
+    };
   }
 }

@@ -1,13 +1,24 @@
-import { Injectable } from '@nestjs/common';
-import { Cron, CronExpression } from '@nestjs/schedule';
-import DatabaseService from '../../database/database.service';
+import { Injectable, Logger } from "@nestjs/common";
+import { Cron, CronExpression } from "@nestjs/schedule";
+import { InternalJobsService } from "../app/internal-jobs/internal-jobs.service";
 
 @Injectable()
 export default class CronService {
-    constructor(private _dbService: DatabaseService) {}
+  private readonly log = new Logger(CronService.name);
 
-    @Cron(CronExpression.EVERY_HOUR, { name: 'test' })
-    HandleTestMessage() {
-        console.log("'===> Generated from test cron <===', '[CRON]'")
+  constructor(private readonly internalJobs: InternalJobsService) {}
+
+  @Cron(process.env.ORDER_EXPIRY_CRON_CRON ?? CronExpression.EVERY_10_MINUTES, {
+    name: "order_expiry_sweep",
+  })
+  async orderExpirySweep() {
+    if (process.env.ORDER_EXPIRY_CRON_ENABLED === "false") {
+      return;
     }
+    try {
+      await this.internalJobs.runOrderExpirySweep();
+    } catch (e) {
+      this.log.warn(`order expiry sweep failed: ${e}`);
+    }
+  }
 }

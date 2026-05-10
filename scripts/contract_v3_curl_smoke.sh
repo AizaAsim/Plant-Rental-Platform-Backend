@@ -13,7 +13,23 @@ hdr_auth() { [[ -n "$1" ]] && echo -H "Authorization: Bearer $1"; }
 echo "== Health (no auth) =="
 curl -sS -o /dev/null -w "%{http_code}\n" "${BASE}/" || true
 
+echo "== Gardener onboarding catalog (public) =="
+curl -sS "${BASE}/api/v1/gardeners/onboarding" | head -c 500
+echo
+
 if [[ -n "$VJ" ]]; then
+  echo "== Vendor orders list (?page=&limit= must be numeric; regression) =="
+  curl -sS "${BASE}/api/v1/orders/vendor/orders?page=1&limit=2" $(hdr_auth "$VJ") | head -c 500
+  echo
+  echo "== Vendor fulfillment-audit (bogus order id expect 404) =="
+  curl -sS "${BASE}/api/v1/orders/vendor/orders/00000000-0000-4000-8000-000000000098/fulfillment-audit" $(hdr_auth "$VJ") | head -c 380
+  echo
+  echo "== Vendor onboarding (Phase 00) =="
+  curl -sS "${BASE}/api/v1/vendor/onboarding" $(hdr_auth "$VJ") | head -c 800
+  echo
+  echo "== Vendor staff-gardeners list (alias) =="
+  curl -sS "${BASE}/api/v1/vendor/staff-gardeners" $(hdr_auth "$VJ") | head -c 600
+  echo
   echo "== Vendor package create (sample) =="
   curl -sS -X POST "${BASE}/api/v1/vendor/packages" \
     $(hdr_auth "$VJ") -H "Content-Type: application/json" \
@@ -22,6 +38,15 @@ if [[ -n "$VJ" ]]; then
   echo "== Vendor package list =="
   curl -sS "${BASE}/api/v1/vendor/packages" $(hdr_auth "$VJ") | head -c 400
   echo
+  echo "== Vendor rentals by bucket (canonical) =="
+  curl -sS "${BASE}/api/v1/vendor/rentals?bucket=DUE_TODAY&page=1&limit=3" $(hdr_auth "$VJ") | head -c 520
+  echo
+  NID="$(curl -sS "${BASE}/api/v1/vendor/onboarding" $(hdr_auth "$VJ") | jq -r '.nursery_id // empty')"
+  if [[ -n "$NID" && "$NID" != "null" ]]; then
+    echo "== Public nursery vendor-packages (Phase 02) =="
+    curl -sS "${BASE}/api/v1/nurseries/${NID}/vendor-packages" | head -c 600
+    echo
+  fi
 fi
 
 if [[ -n "$UJ" ]]; then
@@ -43,9 +68,31 @@ if [[ -n "$AJ" ]]; then
   echo
 fi
 
+if [[ -n "$UJ" ]]; then
+  echo "== Customer fulfillment-summary (bogus order → 404) =="
+  curl -sS "${BASE}/api/v1/orders/00000000-0000-4000-8000-000000000097/fulfillment-summary" $(hdr_auth "$UJ") | head -c 380
+  echo
+  echo "== Freelance jobs — customer my-requests =="
+  curl -sS "${BASE}/api/v1/freelance-jobs/my-requests?page=1&limit=5" $(hdr_auth "$UJ") | head -c 450
+  echo
+  echo "== Freelance jobs — cancel bogus id (expect not found envelope) =="
+  curl -sS -X POST "${BASE}/api/v1/freelance-jobs/00000000-0000-4000-8000-000000000099/cancel" $(hdr_auth "$UJ") \
+    -H "Content-Type: application/json" -d '{}' | head -c 380
+  echo
+  echo "== Payments initiate FREELANCE bogus ref (expect 404) =="
+  curl -sS -X POST "${BASE}/api/v1/payments/initiate" $(hdr_auth "$UJ") \
+    -H "Content-Type: application/json" \
+    -d '{"payment_for":"FREELANCE_JOB","reference_id":"00000000-0000-4000-8000-000000000099","payment_method":"card"}' | head -c 380
+  echo
+fi
+
 if [[ -n "$GJ" ]]; then
-  echo "== Freelance open jobs =="
-  curl -sS "${BASE}/api/v1/freelance-jobs/open" $(hdr_auth "$GJ") | head -c 400
+  echo "== Freelance jobs — open marketplace (gardener) =="
+  curl -sS "${BASE}/api/v1/freelance-jobs/open?page=1&limit=5" $(hdr_auth "$GJ") | head -c 450
+  echo
+  echo "== Freelance jobs — withdraw bogus id (expect not found envelope) =="
+  curl -sS -X POST "${BASE}/api/v1/freelance-jobs/00000000-0000-4000-8000-000000000099/withdraw" $(hdr_auth "$GJ") \
+    -H "Content-Type: application/json" -d '{}' | head -c 380
   echo
 fi
 

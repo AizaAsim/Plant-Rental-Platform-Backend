@@ -8,5 +8,6 @@ import { RolesGuard } from "../auth/guard/roles.guard";
   imports: [PrismaModule],
   controllers: [InternalJobsController],
   providers: [InternalJobsService, RolesGuard],
+  exports: [InternalJobsService],
 })
 export class InternalJobsModule {}

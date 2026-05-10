@@ -33,6 +33,7 @@ import { ContractCommonModule } from "./common/contract/contract-common.module";
 import { VendorPackagesModule } from "./modules/app/vendor-packages/vendor-packages.module";
 import { FreelanceJobsModule } from "./modules/app/freelance-jobs/freelance-jobs.module";
 import { InternalJobsModule } from "./modules/app/internal-jobs/internal-jobs.module";
+import { VendorOnboardingModule } from "./modules/app/vendor-onboarding/vendor-onboarding.module";
 @Module({
   imports: [
     ContractCommonModule,
@@ -58,6 +59,7 @@ import { InternalJobsModule } from "./modules/app/internal-jobs/internal-jobs.mo
     ReviewsDisputesModule,
     PreferencesModule,
     VendorPackagesModule,
+    VendorOnboardingModule,
     FreelanceJobsModule,
     InternalJobsModule,
     AiModule,

@@ -140,6 +140,87 @@
       It is <strong>not</strong> a full “ideal” spec: some product docs use labels like <code>APPROVED</code> or <code>EXPIRED</code> that are <strong>not</strong> separate enum values in the database.
     </div>
 
+    <h2>0. Vendor onboarding &amp; team management (Phase 00)</h2>
+    <p>
+      Profile, service coverage, catalogue packages, and <strong>nursery staff</strong> (create/update/credentials/status) live primarily under
+      <code>/api/v1/nurseries</code> and <code>/api/v1/vendor/packages</code>. For a single JSON response that lists every route and your completion flags, call:
+    </p>
+    <pre class="api-line">GET /api/v1/vendor/onboarding  (Authorization: Bearer, role VENDOR)</pre>
+    <p class="note">
+      That endpoint returns <code>checks</code>, <code>counts</code>, <code>minimum_ready_for_package_sales</code>, <code>recommended_next</code>, and <code>canonical_flow</code> (ordered steps with method/path).
+    </p>
+
+    <div class="phase">
+      <div class="phase-num">PHASE 00 — ENDPOINTS (as implemented)</div>
+      <table>
+        <thead>
+          <tr><th>Area</th><th>Method(s)</th><th>Path</th><th>Notes</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>Auth</td><td>POST</td><td><code>/api/v1/auth/register</code>, <code>login</code>, <code>verify-otp</code></td><td>VENDOR JWT</td></tr>
+          <tr><td>Nursery profile</td><td>POST</td><td><code>/api/v1/nurseries</code></td><td>Create vendor storefront (once)</td></tr>
+          <tr><td>Nursery profile</td><td>GET / PUT</td><td><code>/api/v1/nurseries/my-nursery</code></td><td>Read / update</td></tr>
+          <tr><td>Service areas</td><td>PUT / GET</td><td><code>/api/v1/nurseries/my-nursery/service-areas</code></td><td>Pincodes / cities</td></tr>
+          <tr><td>Service check</td><td>GET</td><td><code>/api/v1/nurseries/check-serviceability</code></td><td>Public; query params</td></tr>
+          <tr><td>Working hours</td><td>PUT / GET</td><td><code>/api/v1/nurseries/my-nursery/working-hours</code></td><td>Weekly grid</td></tr>
+          <tr><td>Gallery</td><td>POST / DELETE</td><td><code>/api/v1/nurseries/my-nursery/images</code> … <code>/:image_id</code></td><td></td></tr>
+          <tr><td>Vendor packages</td><td>POST / GET / PUT / DELETE</td><td><code>/api/v1/vendor/packages</code> … <code>/:package_id</code></td><td>Own tiers; Phase 02 — see §0c</td></tr>
+          <tr><td>Vendor packages (public)</td><td>GET</td><td><code>/api/v1/nurseries/:nursery_id/vendor-packages</code></td><td>Active catalogue for storefront</td></tr>
+          <tr><td><strong>Staff team (preferred)</strong></td><td>POST / GET / PUT / DELETE</td><td><code>/api/v1/vendor/staff-gardeners</code> … <code>/:gardener_id</code></td><td>Same as legacy nursery routes</td></tr>
+          <tr><td><strong>Staff team (legacy)</strong></td><td>POST / GET / PUT / DELETE</td><td><code>/api/v1/nurseries/my-nursery/gardeners</code> … <code>/:gardener_id</code></td><td>Nursery-attached accounts</td></tr>
+          <tr><td>Staff ops</td><td>POST</td><td><code>.../reset-credentials</code>, <code>.../status</code>, <code>.../invite</code> (both bases)</td><td>Credentials &amp; lifecycle</td></tr>
+          <tr><td>Invitations</td><td>GET</td><td><code>/api/v1/vendor/staff-gardeners/invitations/sent</code> or <code>/api/v1/nurseries/my-nursery/invitations</code></td><td>Sent invites</td></tr>
+          <tr><td>Freelance browse</td><td>GET</td><td><code>/api/v1/gardeners/freelance</code></td><td>Not staff CRUD; marketplace list</td></tr>
+        </tbody>
+      </table>
+      <p class="warn-note">
+        <strong>Staff vs freelance:</strong> vendor team CRUD is <code>/api/v1/vendor/staff-gardeners</code> (aliases <code>my-nursery/gardeners</code>). Marketplace browse is <code>/gardeners/freelance</code> only — see <strong>§0b</strong>.
+      </p>
+    </div>
+
+    <h2>0b. Gardener onboarding — staff vs freelance</h2>
+    <p>
+      <strong>Staff:</strong> vendors create accounts, set passwords (reset), update profile fields, and deactivate — no self-registration path required for the staff user beyond login.
+      <strong>Freelance:</strong> the user registers as <code>GARDENER</code>, then <code>POST /api/v1/gardeners/profile</code> with <code>is_freelancer</code> and <code>hourly_rate</code>, plus skills / areas / availability.
+    </p>
+    <pre class="api-line">GET /api/v1/gardeners/onboarding</pre>
+    <p class="note">Public JSON catalog: <code>staff_vendor_managed</code>, <code>freelance_self_service</code>, <code>public_discovery</code>, and <code>freelance_maintenance_jobs</code> (REST paths for <code>/api/v1/freelance-jobs</code>).</p>
+    <pre class="api-line">GET /api/v1/gardeners/onboarding/me   (Authorization: Bearer, role GARDENER)</pre>
+    <p>Returns <code>path</code> hints (<code>staff</code> | <code>freelance</code> | <code>hybrid</code>), <code>must_change_password</code>, and <code>recommended_next</code>.</p>
+    <table>
+      <thead>
+        <tr><th>Actor</th><th>Role</th><th>Primary paths</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Vendor</td><td>VENDOR</td><td><code>POST/GET/PUT/DELETE /api/v1/vendor/staff-gardeners...</code>, <code>.../reset-credentials</code>, <code>.../status</code>, <code>.../invite</code>, <code>GET .../invitations/sent</code></td></tr>
+        <tr><td>Vendor (legacy)</td><td>VENDOR</td><td>Same behaviour: <code>/api/v1/nurseries/my-nursery/gardeners...</code></td></tr>
+        <tr><td>Freelancer</td><td>GARDENER</td><td><code>POST/GET/PUT /api/v1/gardeners/profile</code>, <code>availability</code>, <code>service-areas</code>, <code>skills</code></td></tr>
+        <tr><td>Public</td><td>—</td><td><code>GET /api/v1/gardeners/freelance</code>, <code>GET .../skills/all</code>, <code>GET .../:gardener_id</code></td></tr>
+      </tbody>
+    </table>
+
+    <h2>0c. Vendor packages / catalogue (Phase 02)</h2>
+    <p>
+      Vendor-owned rental <strong>tiers</strong> live in <code>VendorPackage</code> (not the legacy <code>PlantPackage</code> rows used by <code>POST /api/v1/cart/packages</code>).
+      Vendors manage inventory in the app with the authenticated CRUD below; customers discover active rows via the public path per nursery.
+    </p>
+    <table>
+      <thead>
+        <tr><th>Audience</th><th>Method(s)</th><th>Path</th><th>Notes</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Vendor</td><td>POST</td><td><code>/api/v1/vendor/packages</code></td><td>Create tier; requires nursery; body validated (see Swagger <em>Vendor packages (Phase 02)</em>)</td></tr>
+        <tr><td>Vendor</td><td>GET</td><td><code>/api/v1/vendor/packages</code></td><td>List; query <code>is_active</code></td></tr>
+        <tr><td>Vendor</td><td>GET</td><td><code>/api/v1/vendor/packages/:package_id</code></td><td>One tier; use <code>package_id</code> from payloads (VPkg‑…) <strong>or</strong> row UUID</td></tr>
+        <tr><td>Vendor</td><td>PUT</td><td><code>/api/v1/vendor/packages/:package_id</code></td><td>Partial update</td></tr>
+        <tr><td>Vendor</td><td>DELETE</td><td><code>/api/v1/vendor/packages/:package_id</code></td><td>Soft deactivate (<code>is_active</code> false)</td></tr>
+        <tr><td>Public / customer UI</td><td>GET</td><td><code>/api/v1/nurseries/:nursery_id/vendor-packages</code></td><td>Active tiers only; same <code>package_id</code> shape as vendor list</td></tr>
+      </tbody>
+    </table>
+    <p class="note">
+      <strong>Migration hint:</strong> checkout/cart flows in this codebase still attach legacy <code>plant_packages</code> until you extend <code>/api/v1/cart</code> to accept vendor <code>package_id</code> — Phase 02 API surface above is catalogue + vendor admin; ordering integration is separate.
+    </p>
+
     <h2>1. Order status (what the DB uses)</h2>
     <p>Orders use Prisma <code>OrderStatus</code>, for example:</p>
     <table>
@@ -153,12 +234,79 @@
         <tr><td><code>OUT_FOR_DELIVERY</code></td><td>Used when delivery is in progress (e.g. after customer confirmed a slot in contract flow paths).</td></tr>
         <tr><td><code>DELIVERED</code></td><td>Delivery completed; rental lines can become active.</td></tr>
         <tr><td><code>COMPLETED</code></td><td>Order/rental lifecycle completed.</td></tr>
+        <tr><td><code>SLOT_PROPOSED</code></td><td>Vendor ran propose-delivery-slots; <code>workflowMeta.delivery</code> holds proposals + <code>slotExpiresAt</code>.</td></tr>
+        <tr><td><code>SLOT_CONFIRMED</code></td><td>Customer confirmed a slot via customer-delivery-response; may await payment (<code>paymentWindowExpiresAt</code> in meta).</td></tr>
+        <tr><td><code>AWAITING_PAYMENT</code></td><td>Payment initiate path after slot confirmation (see payments service).</td></tr>
         <tr><td><code>CANCELLED</code></td><td>Cancelled (customer/vendor/system depending on path).</td></tr>
+        <tr><td><code>EXPIRED</code></td><td>Unpaid checkout or stale slot/payment window (internal jobs).</td></tr>
+        <tr><td><code>RETURNED</code></td><td>Legacy / return-related terminal state where used.</td></tr>
       </tbody>
     </table>
     <p class="note">
       <strong>Product tip:</strong> show “Pay now” when <code>paymentStatus === PENDING</code> (or your gateway state), not only from <code>status</code>. After vendor approve, the API may set <code>status</code> to <code>CONFIRMED</code> while payment is still pending.
     </p>
+
+    <h2>1b. <code>workflowMeta</code> — slot proposals &amp; delivery (Phase 06)</h2>
+    <p>
+      Slot negotiation is <strong>not</strong> a separate SQL state-machine table: the canonical store is <code>order.workflowMeta</code> (JSON).
+      Listed below are the <strong>HTTP endpoints that create / merge those objects</strong> (Swagger tag <code>workflowMeta · slots</code> / <code>return</code>).
+    </p>
+
+    <h3>Endpoints (full paths)</h3>
+    <table>
+      <thead>
+        <tr><th>Role</th><th>Method</th><th>Path</th><th>Effect on <code>workflowMeta</code></th></tr>
+      </thead>
+      <tbody>
+        <tr><td>VENDOR</td><td>POST</td><td><code>/api/v1/orders/:order_id/propose-delivery-slots</code></td><td>Writes/replaces <code>delivery</code> (server adds slot <code>id</code>s, <code>slotExpiresAt</code>), optional <code>gardener_proposals</code>; sets <code>SLOT_PROPOSED</code>.</td></tr>
+        <tr><td>VENDOR</td><td>POST</td><td><code>/api/v1/orders/vendor/orders/:order_id/propose-delivery-slots</code></td><td><strong>Same handler</strong> as row above.</td></tr>
+        <tr><td>CUSTOMER</td><td>POST</td><td><code>/api/v1/orders/:order_id/customer-delivery-response</code></td><td><code>CONFIRM</code> → merges <code>selected</code> slot + gardener fields; status <code>SLOT_CONFIRMED</code> or <code>OUT_FOR_DELIVERY</code>. Other actions set preference blobs (see shapes below).</td></tr>
+        <tr><td>VENDOR</td><td>POST</td><td><code>/api/v1/orders/vendor/orders/:order_id/assign-gardener</code></td><td>Optional <code>delivery_slots[]</code> merges <code>assignGardener</code> object (maintenance tasks always created).</td></tr>
+        <tr><td>VENDOR</td><td>POST</td><td><code>/api/v1/orders/vendor/orders/:order_id/complete-delivery</code></td><td>Order-level proof → <code>workflowMeta.deliveryCompletion</code>; optional <code>line_items[]</code> → SQL <code>delivery_proof_at</code>, <code>delivery_condition</code>, <code>delivery_proof_urls</code>, <code>delivery_line_notes</code> per rental line; sets <code>DELIVERED</code>.</td></tr>
+        <tr><td>VENDOR</td><td>GET</td><td><code>/api/v1/orders/vendor/orders/:order_id/fulfillment-audit</code></td><td>All lines: delivery/return proof + restock flags + <code>workflow_meta_snapshot</code>.</td></tr>
+        <tr><td>VENDOR</td><td>GET</td><td><code>/api/v1/orders/vendor/orders/:order_id/line-items/:order_item_id/fulfillment</code></td><td>Single-line audit (same shape as a row in fulfillment-audit <code>items[]</code>).</td></tr>
+        <tr><td>VENDOR</td><td>POST</td><td><code>/api/v1/orders/vendor/orders/:order_id/initiate-return</code></td><td>Writes <code>return.proposed[]</code> pickup slots (+ ids <code>SLOT-RET-*</code>).</td></tr>
+        <tr><td>VENDOR</td><td>POST</td><td><code>/api/v1/orders/vendor/orders/:order_id/complete-return</code></td><td><code>items[]</code> = one entry per <strong>pending</strong> rental line; <code>collection_date</code>; per line <code>condition</code>, <code>proof_at</code>/<code>collection_proof_at</code>, <code>proof_image_urls</code>, <code>restock</code> → SQL + stock when true; order <code>COMPLETED</code> when all rentals <code>RETURNED</code>.</td></tr>
+        <tr><td>CUSTOMER</td><td>POST</td><td><code>/api/v1/orders/:order_id/customer-return-response</code></td><td><code>CONFIRM</code> merges <code>return.selected</code>; reschedule merges <code>customerReturnPreference</code>.</td></tr>
+        <tr><td>CUSTOMER</td><td>GET</td><td><code>/api/v1/orders/:order_id/fulfillment-summary</code></td><td>Per-line delivery/return conditions + timestamps + <code>proof_image_count</code>; proof URLs redacted; sanitized <code>workflow_meta_snapshot</code>.</td></tr>
+        <tr><td>CUSTOMER</td><td>GET</td><td><code>/api/v1/orders/:order_id/line-items/:order_item_id/fulfillment-summary</code></td><td>Same shape as one row in fulfillment-summary <code>items[]</code>.</td></tr>
+      </tbody>
+    </table>
+
+    <h3><code>workflowMeta.delivery</code> (after propose)</h3>
+    <pre class="api-line">{
+  "delivery": {
+    "proposed": [
+      { "id": "SLOT-XXXXXXXX", "date": "2026-06-10", "time_from": "09:00", "time_to": "12:00" }
+    ],
+    "note": "optional vendor note",
+    "slotExpiresAt": "ISO-8601",
+    "gardener_proposals": [
+      { "proposal_id": "GPROP-XXXXXXXX", "gardener_id": "uuid", "kind": "NURSERY_STAFF", "note": "…" }
+    ]
+  },
+  "paymentWindowExpiresAt": "set on CONFIRM slot when payment still pending (ISO-8601)"
+}</pre>
+
+    <h3>Customer <code>customer-delivery-response</code></h3>
+    <ul class="steps" style="list-style: disc; color: var(--muted); padding-left: 22px;">
+      <li><code>action: CONFIRM</code> + <code>selected_slot_id</code> (must match <code>delivery.proposed[].id</code>). If gardener proposals exist: <code>selected_gardener_proposal_id</code>, or unique <code>selected_gardener_id</code>, or <code>skip_gardener_selection: true</code>.</li>
+      <li><code>action: REQUEST_DIFFERENT_TIME</code> → <code>customerDeliveryPreference</code> merged at top-level.</li>
+      <li><code>action: REQUEST_DIFFERENT_GARDENER</code> → <code>customerGardenerPreference</code> merged at top-level.</li>
+    </ul>
+
+    <h3><code>workflowMeta.return</code> (return pickup)</h3>
+    <pre class="api-line">{
+  "return": {
+    "proposed": [ { "id": "SLOT-RET-XXXXXXXX", "date": "...", "time_from": "...", "time_to": "..." } ],
+    "selected": { ...same shape after customer CONFIRM... },
+    "assigned_staff_gardener_id": "optional uuid",
+    "notes": "…"
+  }
+}</pre>
+
+    <p class="note">
+      <strong>TTL / expiry:</strong> internal jobs consult <code>workflowMeta.delivery.slotExpiresAt</code> and <code>workflowMeta.paymentWindowExpiresAt</code> — configure <code>ORDER_SLOT_TTL_HOURS</code>, <code>ORDER_PAYMENT_WINDOW_TTL_HOURS</code>, and cron (see <code>InternalJobsModule</code>).</p>
 
     <h2>2. Customer journey (core rental order)</h2>
     <div class="phase">
@@ -189,15 +337,15 @@
     <div class="phase">
       <div class="phase-num">D — VENDOR PROCESS &amp; DELIVERY</div>
       <ol class="steps">
-        <li>After payment is <code>PAID</code> (and order <code>CONFIRMED</code>), vendor: <code>POST /api/v1/orders/vendor/orders/:order_id/process</code> → <code>PROCESSING</code>.</li>
-        <li><strong>Propose delivery slots (contract path):</strong> <code>POST .../propose-delivery-slots</code> with <code>delivery_slots[]</code> — stored in <code>order.workflowMeta</code>.</li>
-        <li><strong>Assign gardener (maintenance schedule + optional slot hints):</strong> <code>POST .../assign-gardener</code> (existing). Extra slot arrays can be merged into <code>workflowMeta</code> when sent.</li>
-        <li><strong>Customer picks a slot (contract path):</strong> <code>POST /api/v1/orders/:order_id/customer-delivery-response</code> (<code>action: CONFIRM</code> with <code>selected_slot_id</code>, or request different time).</li>
-        <li><strong>Complete delivery:</strong> <code>POST .../complete-delivery</code> — optional JSON body is merged into <code>workflowMeta.deliveryCompletion</code>; rental lines are activated as implemented in the service.</li>
+        <li>Slot-before-payment variant: vendor may propose while order is still <code>CONFIRMED</code> unpaid — <code>POST /api/v1/orders/vendor/orders/:order_id/propose-delivery-slots</code> (mirror: <code>POST /api/v1/orders/:order_id/propose-delivery-slots</code>).</li>
+        <li>Paid fulfilment path (typical): after <code>PAID</code>, vendor <code>POST /api/v1/orders/vendor/orders/:order_id/process</code> → <code>PROCESSING</code>.</li>
+        <li><strong>Create / merge slots in <code>workflowMeta</code>:</strong> propose body fields and JSON shapes — <strong>§1b</strong> and Swagger examples on each route.</li>
+        <li><strong>Customer reply:</strong> <code>POST /api/v1/orders/:order_id/customer-delivery-response</code> (<code>CONFIRM</code> / reschedule / gardener preference).</li>
+        <li><strong>Optional maintenance + hints:</strong> <code>POST /api/v1/orders/vendor/orders/:order_id/assign-gardener</code> — merges <code>workflowMeta.assignGardener</code> when <code>delivery_slots</code> supplied.</li>
+        <li><strong>Complete delivery:</strong> <code>POST /api/v1/orders/vendor/orders/:order_id/complete-delivery</code> → <code>DELIVERED</code>; optional body → <code>workflowMeta.deliveryCompletion</code>.</li>
       </ol>
       <p class="warn-note">
-        <strong>Docs vs one UI action:</strong> the product may show “schedule delivery” as one screen, but the backend may require <strong>more than one</strong> call (e.g. propose slots, then assign gardener). The client should sequence calls or the backend can be extended later to bundle them.
-      </p>
+        <strong>Docs vs one UI action:</strong> the product may show “schedule delivery” as one screen, but the backend may require <strong>more than one</strong> call (e.g. propose slots, assign gardener). See <strong>§1b</strong> for the contract.</p>
     </div>
 
     <div class="phase">
@@ -220,17 +368,48 @@
     </div>
 
     <h2>3. Parallel flows (separate from nursery rental order state machine)</h2>
+    <p class="note">Phase 00 is <strong>§0</strong> / <code>GET /api/v1/vendor/onboarding</code>. Phase 02 vendor catalogue is <strong>§0c</strong>.</p>
     <h3>Vendor packages (own catalogue)</h3>
-    <pre class="api-line">POST/GET/PUT/DELETE  /api/v1/vendor/packages</pre>
-    <p>CRUD for vendor-defined packages. The legacy public <code>/api/v1/packages</code> may still be used by older clients until the app migrates.</p>
+    <pre class="api-line">POST GET PUT DELETE /api/v1/vendor/packages  (+ GET …/:package_id) · GET /api/v1/nurseries/:nursery_id/vendor-packages</pre>
+    <p>VENDOR CRUD + public nursery catalogue. Legacy cart still uses <code>/api/v1/cart/packages</code> + <code>PlantPackage</code> until cart is extended.</p>
 
     <h3>Staff gardeners (vendor-created accounts)</h3>
-    <pre class="api-line">POST/GET/PUT  /api/v1/nurseries/my-nursery/gardeners[...]  (create, get, update, status, reset-credentials)</pre>
-    <p>Aligned with “vendor issues credentials” flows; not invite-code onboarding.</p>
+    <pre class="api-line">POST/GET/PUT/DELETE  /api/v1/vendor/staff-gardeners[...]  (+ reset-credentials, status, invite, invitations/sent)</pre>
+    <p>Legacy twin: <code>/api/v1/nurseries/my-nursery/gardeners</code>. Full table: <strong>§0b</strong> and <code>GET /api/v1/gardeners/onboarding</code>.</p>
 
-    <h3>Freelance jobs (Basic tier add-on in product copy)</h3>
-    <pre class="api-line">/api/v1/freelance-jobs  (create, my-requests, open, accept, my-jobs, start, complete, review)</pre>
-    <p>Independent of nursery task assignment; uses <code>FreelanceJob</code> records.</p>
+    <h3>Vendor rental lifecycle (dashboard buckets)</h3>
+    <pre class="api-line">GET /api/v1/vendor/rentals?bucket=ONGOING|DUE_TODAY|OVERDUE|COMPLETED&amp;page=&amp;limit=</pre>
+    <p>
+      Canonical board for nursery rental <strong>line items</strong>. Response includes <code>counts</code> (<code>ongoing</code>, <code>due_today</code>, <code>overdue</code>, <code>completed</code>) for badges plus one bucket’s <code>items[]</code> (<code>OrderItem</code> rows + plant + customer + delivery address).
+      Days use the <strong>server local midnight</strong>; default <code>bucket=ONGOING</code>. Legacy flat list: <code>GET /api/v1/orders/vendor/rentals/active</code> (<code>status=DUE_TODAY|OVERDUE</code> or all in-flight).
+    </p>
+
+    <h3>Freelance maintenance jobs (<code>FreelanceJob</code> marketplace)</h3>
+    <p>
+      Separate from nursery <code>MaintenanceTask</code> / staff assignment. Swagger tag: <strong>Freelance jobs (marketplace)</strong>.
+      Catalogue in JSON: <code>GET /api/v1/gardeners/onboarding</code> → <code>freelance_maintenance_jobs</code>.
+    </p>
+    <table>
+      <thead>
+        <tr><th>Audience</th><th>HTTP</th><th>Path</th><th>Notes</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Customer</td><td>POST</td><td><code>/api/v1/freelance-jobs</code></td><td>Body: delivery address, preferred date/time, optional <code>budget_amount</code>, optional <code>order_id</code> → <code>OPEN</code> (HTTP 201)</td></tr>
+        <tr><td>Customer</td><td>GET</td><td><code>/api/v1/freelance-jobs/my-requests</code></td><td>Query <code>status</code>, <code>page</code>, <code>limit</code></td></tr>
+        <tr><td>Customer</td><td>GET</td><td><code>/api/v1/freelance-jobs/:job_id</code></td><td>Owner only; <code>job_id</code> = <code>FJB-…</code> or UUID</td></tr>
+        <tr><td>Customer</td><td>POST</td><td><code>/api/v1/freelance-jobs/:job_id/review</code></td><td><code>rating</code> 1–5, optional <code>comment</code> (<code>COMPLETED</code> only); idempotent replay if identical</td></tr>
+        <tr><td>Customer</td><td>POST</td><td><code>/api/v1/freelance-jobs/:job_id/cancel</code></td><td><code>OPEN</code>/<code>ACCEPTED</code> before start; blocked with pending freelance payment or after <code>paid_at</code></td></tr>
+        <tr><td>Customer</td><td>POST</td><td><code>/api/v1/payments/initiate</code></td><td><code>payment_for: FREELANCE_JOB</code>, <code>reference_id</code>: job UUID or <code>FJB-…</code>; amount = <code>budget_amount</code> (<code>ACCEPTED</code> only)</td></tr>
+        <tr><td>Freelance gardener</td><td>GET</td><td><code>/api/v1/freelance-jobs/open</code></td><td>Browse OPEN; filters: city, pincode, care_type, dates, pagination</td></tr>
+        <tr><td>Freelance gardener</td><td>GET</td><td><code>/api/v1/freelance-jobs/my-jobs</code></td><td>Accepted / in-progress listing</td></tr>
+        <tr><td>Freelance gardener</td><td>GET</td><td><code>/api/v1/freelance-jobs/:job_id</code></td><td>Any freelancer may read <code>OPEN</code> jobs; assigned gardener for other statuses</td></tr>
+        <tr><td>Freelance gardener</td><td>POST</td><td><code>/api/v1/freelance-jobs/:job_id/accept</code></td><td><code>OPEN</code> → <code>ACCEPTED</code>; requires freelance profile; atomic (conflict if already taken)</td></tr>
+        <tr><td>Freelance gardener</td><td>POST</td><td><code>/api/v1/freelance-jobs/:job_id/withdraw</code></td><td><code>ACCEPTED</code> → <code>OPEN</code> before payment or job start</td></tr>
+        <tr><td>Freelance gardener</td><td>POST</td><td><code>/api/v1/freelance-jobs/:job_id/start</code></td><td><code>ACCEPTED</code> → <code>IN_PROGRESS</code>; when <code>budget_amount</code> set, requires customer <code>paid_at</code> (via <code>payments/verify</code>)</td></tr>
+        <tr><td>Freelance gardener</td><td>POST</td><td><code>/api/v1/freelance-jobs/:job_id/complete</code></td><td><code>IN_PROGRESS</code> → <code>COMPLETED</code>; notes + optional <code>photo_urls</code></td></tr>
+      </tbody>
+    </table>
+    <p class="note"><strong>Browse freelancers (profiles):</strong> still <code>GET /api/v1/gardeners/freelance</code> — different resource from posting a <code>FreelanceJob</code>.</p>
 
     <h3>Preferences (recommender)</h3>
     <pre class="api-line">GET/PUT  /api/v1/preferences/recommendation  →  POST /api/v1/ai/recommender/recommend  (optional body overrides)</pre>
@@ -240,7 +419,7 @@
 
     <h2>4. What this HTML deliberately does <em>not</em> promise</h2>
     <ul style="color: var(--muted); margin: 0 0 20px; padding-left: 22px;">
-      <li>Automatic <strong>6-hour expiry</strong> with a dedicated <code>EXPIRED</code> status (unless you add a job + rules — verify with latest <code>orders</code> + cron code).</li>
+      <li>Exact <strong>expiry timings</strong> for slots, payment windows, and unpaid orders: <code>OrderStatus</code> includes <code>EXPIRED</code> where implemented — confirm TTL env vars and <code>cron</code> / internal jobs in your deployment.</li>
       <li>Full <strong>slot state machine</strong> (HELD, RELEASED, etc.) in SQL — many flows use <code>workflowMeta</code> JSON instead.</li>
       <li>Identical labels to a marketing PDF: map UI copy to the <strong>fields above</strong> (status + paymentStatus + workflowMeta).</li>
     </ul>

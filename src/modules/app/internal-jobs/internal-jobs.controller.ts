@@ -15,9 +15,27 @@ export class InternalJobsController {
   constructor(private readonly svc: InternalJobsService) {}
 
   @Post("orders/expire-unpaid")
-  @ApiOperation({ summary: "Expire unpaid orders (MISS-08) — admin stub" })
+  @ApiOperation({ summary: "Expire old unpaid checkout orders (PENDING) + release stock" })
   async expireUnpaid(@Body() body: Record<string, unknown>) {
     return this.svc.expireUnpaid(body);
+  }
+
+  @Post("orders/expire-stale-slot-proposals")
+  @ApiOperation({ summary: "Expire SLOT_PROPOSED after workflowMeta.delivery.slotExpiresAt" })
+  async expireStaleSlotProposals(@Body() body: Record<string, unknown>) {
+    return this.svc.expireStaleSlotProposals(body);
+  }
+
+  @Post("orders/expire-stale-payment-windows")
+  @ApiOperation({ summary: "Expire SLOT_CONFIRMED / AWAITING_PAYMENT unpaid after paymentWindowExpiresAt" })
+  async expireStalePaymentWindows(@Body() body: Record<string, unknown>) {
+    return this.svc.expireStalePaymentWindows(body);
+  }
+
+  @Post("orders/expire-sweep")
+  @ApiOperation({ summary: "Run all order expiry jobs (same as cron)" })
+  async expireSweep() {
+    return this.svc.runOrderExpirySweep();
   }
 
   @Post("orders/due-reminders")

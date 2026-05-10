@@ -19,9 +19,19 @@ import {
   ApiParam,
   ApiQuery,
   ApiBearerAuth,
+  ApiBody,
 } from "@nestjs/swagger";
 import { OrdersService } from "./orders.service";
 import { OrderContractFlowService } from "./order-contract-flow.service";
+import {
+  assignGardenerApiBody,
+  completeDeliveryFulfillmentApiBody,
+  customerDeliveryResponseApiBody,
+  customerReturnResponseApiBody,
+  proposeDeliverySlotsApiBody,
+  vendorCompleteReturnApiBody,
+  vendorInitiateReturnApiBody,
+} from "./order-workflow.swagger";
 import { JwtAuthGuard } from "../auth/guard/jwt-auth.guard";
 import { RolesGuard } from "../auth/guard/roles.guard";
 import { Roles } from "../auth/decorators/roles.decorator";
@@ -84,7 +94,16 @@ export class OrdersController {
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(UserRole.USER)
   @ApiBearerAuth()
-  @ApiOperation({ summary: "Customer confirms or requests different delivery slot (MISS-03)" })
+  @ApiTags("Orders", "workflowMeta · slots")
+  @ApiBody(customerDeliveryResponseApiBody)
+  @ApiOperation({
+    summary: "Customer replies to proposed delivery slots — updates workflowMeta + order status",
+    description:
+      "**Path:** `POST /api/v1/orders/:order_id/customer-delivery-response`. " +
+      "Uses `workflowMeta.delivery.proposed` from vendor propose. " +
+      "`CONFIRM` may set `SLOT_CONFIRMED` (unpaid path, sets `paymentWindowExpiresAt`) or `OUT_FOR_DELIVERY` when already paid — see implementation.",
+  })
+  @ApiParam({ name: "order_id", description: "Order UUID or order number" })
   async customerDeliveryResponse(
     @Request() req,
     @Param("order_id") orderId: string,
@@ -99,8 +118,15 @@ export class OrdersController {
   @Roles(UserRole.VENDOR)
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: "Vendor proposes delivery slots (stored in workflowMeta, status SLOT_PROPOSED)" })
-  @ApiParam({ name: "order_id" })
+  @ApiTags("Orders", "workflowMeta · slots")
+  @ApiBody(proposeDeliverySlotsApiBody)
+  @ApiOperation({
+    summary: "Vendor proposes delivery slots — merges workflowMeta.delivery, status → SLOT_PROPOSED",
+    description:
+      "**Path:** `POST /api/v1/orders/:order_id/propose-delivery-slots` (alias: `POST .../vendor/orders/:order_id/propose-delivery-slots`). " +
+      "Order must be CONFIRMED or SLOT_PROPOSED. Server stores `slotExpiresAt` on the delivery object.",
+  })
+  @ApiParam({ name: "order_id", description: "Order UUID or order number" })
   async vendorProposeDeliverySlotsByOrderId(
     @Request() req,
     @Param("order_id") orderId: string,
@@ -113,7 +139,13 @@ export class OrdersController {
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(UserRole.USER)
   @ApiBearerAuth()
-  @ApiOperation({ summary: "Customer return pickup response (MISS-22)" })
+  @ApiTags("Orders", "workflowMeta · return")
+  @ApiBody(customerReturnResponseApiBody)
+  @ApiOperation({
+    summary: "Customer return pickup response — reads workflowMeta.return.proposed",
+    description: "**Path:** `POST /api/v1/orders/:order_id/customer-return-response`",
+  })
+  @ApiParam({ name: "order_id", description: "Order UUID or order number" })
   async customerReturnResponse(
     @Request() req,
     @Param("order_id") orderId: string,
@@ -142,6 +174,37 @@ export class OrdersController {
     @Body() body: Record<string, unknown>
   ) {
     return this.orderContractFlow.finalizePenalty(req.user.id, orderId, body);
+  }
+
+  @Get(":order_id/fulfillment-summary")
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.USER)
+  @ApiBearerAuth()
+  @ApiTags("Orders", "Proof of delivery · returns (customer)")
+  @ApiOperation({
+    summary: "Fulfillment audit for your order (proof URLs redacted)",
+    description:
+      "Same lifecycle fields as vendor fulfillment audit, but **`proof_urls` are never returned**: use **`proof_image_count`** + timestamps. **`workflow_meta_snapshot`** hides raw URL arrays under `proof_image_urls` / similar keys.",
+  })
+  @ApiParam({ name: "order_id", description: "Order UUID or order number" })
+  async getCustomerFulfillmentSummary(@Request() req, @Param("order_id") orderId: string) {
+    return this.ordersService.getCustomerFulfillmentSummary(req.user.id, orderId);
+  }
+
+  @Get(":order_id/line-items/:order_item_id/fulfillment-summary")
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.USER)
+  @ApiBearerAuth()
+  @ApiTags("Orders", "Proof of delivery · returns (customer)")
+  @ApiOperation({ summary: "Single line fulfillment summary (customer, URLs redacted)" })
+  @ApiParam({ name: "order_id", description: "Order UUID or order number" })
+  @ApiParam({ name: "order_item_id", description: "OrderItem UUID" })
+  async getCustomerLineFulfillmentSummary(
+    @Request() req,
+    @Param("order_id") orderId: string,
+    @Param("order_item_id") orderItemId: string
+  ) {
+    return this.ordersService.getCustomerLineFulfillmentSummary(req.user.id, orderId, orderItemId);
   }
 
   @Get(":order_id")
@@ -270,12 +333,47 @@ export class OrdersController {
     return this.ordersService.getVendorOrderStats(req.user.id, period || "month");
   }
 
+  @Get("vendor/orders/:order_id/fulfillment-audit")
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.VENDOR)
+  @ApiBearerAuth()
+  @ApiTags("Orders", "Proof of delivery · returns")
+  @ApiOperation({
+    summary: "Per-line delivery/return proof flags + workflowMeta excerpts",
+    description:
+      "**Path:** `GET /api/v1/orders/vendor/orders/:order_id/fulfillment-audit`. Reads persisted `OrderItem` delivery/return columns and a small `workflow_meta_snapshot` (delivery, delivery_completion, return).",
+  })
+  @ApiParam({ name: "order_id", description: "Order UUID or order number" })
+  async getVendorFulfillmentAudit(@Request() req, @Param("order_id") orderId: string) {
+    return this.ordersService.getVendorFulfillmentAudit(req.user.id, orderId);
+  }
+
+  @Get("vendor/orders/:order_id/line-items/:order_item_id/fulfillment")
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.VENDOR)
+  @ApiBearerAuth()
+  @ApiTags("Orders", "Proof of delivery · returns")
+  @ApiOperation({
+    summary: "Single order line fulfillment / proof-of-delivery & return audit",
+    description:
+      "**Path:** `GET …/line-items/:order_item_id/fulfillment` — same shaped `item` object as rows in fulfillment-audit `items[]`.",
+  })
+  @ApiParam({ name: "order_id", description: "Order UUID or order number" })
+  @ApiParam({ name: "order_item_id", description: "OrderItem UUID" })
+  async getVendorLineFulfillment(
+    @Request() req,
+    @Param("order_id") orderId: string,
+    @Param("order_item_id") orderItemId: string
+  ) {
+    return this.ordersService.getVendorLineFulfillment(req.user.id, orderId, orderItemId);
+  }
+
   @Get("vendor/orders/:order_id")
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(UserRole.VENDOR)
   @ApiBearerAuth()
   @ApiOperation({ summary: "Get order details (vendor view)" })
-  @ApiParam({ name: "order_id", description: "Order ID" })
+  @ApiParam({ name: "order_id", description: "Order UUID or order number" })
   @ApiResponse({
     status: 200,
     description: "Order details retrieved successfully",
@@ -327,8 +425,13 @@ export class OrdersController {
   @Roles(UserRole.VENDOR)
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: "Propose delivery slots (MOD-02)" })
-  @ApiParam({ name: "order_id" })
+  @ApiTags("Orders", "workflowMeta · slots")
+  @ApiBody(proposeDeliverySlotsApiBody)
+  @ApiOperation({
+    summary: "Propose delivery slots (vendor path — same body as POST .../orders/:order_id/propose-delivery-slots)",
+    description: "**Path:** `POST /api/v1/orders/vendor/orders/:order_id/propose-delivery-slots`",
+  })
+  @ApiParam({ name: "order_id", description: "Order UUID or order number" })
   async vendorProposeDeliverySlots(
     @Request() req,
     @Param("order_id") orderId: string,
@@ -342,8 +445,13 @@ export class OrdersController {
   @Roles(UserRole.VENDOR)
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: "Vendor initiate return pickup (MISS-17)" })
-  @ApiParam({ name: "order_id" })
+  @ApiTags("Orders", "workflowMeta · return")
+  @ApiBody(vendorInitiateReturnApiBody)
+  @ApiOperation({
+    summary: "Vendor initiate return — stores pickup options under workflowMeta.return",
+    description: "**Path:** `POST /api/v1/orders/vendor/orders/:order_id/initiate-return`",
+  })
+  @ApiParam({ name: "order_id", description: "Order UUID or order number" })
   async vendorInitiateReturn(
     @Request() req,
     @Param("order_id") orderId: string,
@@ -357,7 +465,13 @@ export class OrdersController {
   @Roles(UserRole.VENDOR)
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: "Complete return with per-item condition (MISS-18)" })
+  @ApiTags("Orders", "Proof of delivery · returns", "workflowMeta · return")
+  @ApiBody(vendorCompleteReturnApiBody)
+  @ApiOperation({
+    summary: "Complete return — per-line condition, proof timestamps, conditional restock",
+    description:
+      "Persists return proof/condition/URLs, restock flags and restocked_at, actual_return_date. Requires items[] sized to pending rental rows. Sets order COMPLETED when every rental line is RETURNED.",
+  })
   @ApiParam({ name: "order_id" })
   async vendorCompleteReturn(
     @Request() req,
@@ -372,7 +486,13 @@ export class OrdersController {
   @Roles(UserRole.VENDOR)
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: "Complete delivery — activate rental clock" })
+  @ApiTags("Orders", "Proof of delivery · returns")
+  @ApiBody(completeDeliveryFulfillmentApiBody)
+  @ApiOperation({
+    summary: "Complete delivery — activate rental clock + optional per-line proof",
+    description:
+      "Starts rental period (rent dates). Optionally send **`line_items[]`** so each rental row stores **`delivery_proof_at`**, condition, urls, notes. Order-level keys still merge into `workflowMeta.deliveryCompletion`.",
+  })
   @ApiParam({ name: "order_id" })
   async vendorCompleteDelivery(
     @Request() req,
@@ -424,8 +544,15 @@ export class OrdersController {
   @Roles(UserRole.VENDOR)
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: "Assign gardener for rental maintenance" })
-  @ApiParam({ name: "order_id", description: "Order ID" })
+  @ApiTags("Orders", "workflowMeta · delivery assignment")
+  @ApiBody(assignGardenerApiBody)
+  @ApiOperation({
+    summary: "Assign gardener for rental maintenance — optional workflowMeta.assignGardener",
+    description:
+      "**Path:** `POST /api/v1/orders/vendor/orders/:order_id/assign-gardener`. " +
+      "Nursery staff only. When `delivery_slots` is sent, merged into `workflowMeta` alongside `gardener_id`.",
+  })
+  @ApiParam({ name: "order_id", description: "Order UUID" })
   @ApiResponse({
     status: 200,
     description: "Gardener assigned successfully",
@@ -442,10 +569,21 @@ export class OrdersController {
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(UserRole.VENDOR)
   @ApiBearerAuth()
-  @ApiOperation({ summary: "Get active rentals" })
+  @ApiOperation({
+    summary: "[Legacy] List non-completed rental line-items",
+    description:
+      "Canonical buckets + counts: **`GET /api/v1/vendor/rentals?bucket=ONGOING|DUE_TODAY|OVERDUE|COMPLETED`**. " +
+      "This path keeps the old `status` filter (`DUE_TODAY`, `OVERDUE`); default/`ACTIVE` returns ACTIVE+EXTENDED+OVERDUE rentals (not RETURNED).",
+  })
   @ApiQuery({ name: "page", required: false, type: Number })
   @ApiQuery({ name: "limit", required: false, type: Number })
-  @ApiQuery({ name: "status", required: false, enum: ["ACTIVE", "OVERDUE", "DUE_TODAY"] })
+  @ApiQuery({
+    name: "status",
+    required: false,
+    enum: ["ACTIVE", "OVERDUE", "DUE_TODAY"],
+    description:
+      "Prefer `GET /api/v1/vendor/rentals` with bucket. `ACTIVE` (or omitted) = all in-flight rental statuses.",
+  })
   @ApiResponse({
     status: 200,
     description: "Active rentals retrieved successfully",

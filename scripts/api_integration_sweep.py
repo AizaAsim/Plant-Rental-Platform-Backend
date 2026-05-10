@@ -377,6 +377,14 @@ def main() -> None:
     if order_id:
         run("orders by id", "GET", f"/api/v1/orders/{order_id}", token=tok_user)
         run("orders tracking", "GET", f"/api/v1/orders/{order_id}/tracking", token=tok_user)
+        run(
+            "customer fulfillment-summary",
+            "GET",
+            f"/api/v1/orders/{order_id}/fulfillment-summary",
+            token=tok_user,
+            ok=(200,),
+            allow=(403, 404),
+        )
 
     # --- Rentals ---
     run("rentals list", "GET", "/rentals", token=tok_user)
@@ -409,6 +417,20 @@ def main() -> None:
         run("vendor orders list", "GET", "/api/v1/orders/vendor/orders", token=tok_vendor)
         run("vendor orders stats", "GET", "/api/v1/orders/vendor/orders/stats", token=tok_vendor)
         run("vendor active rentals", "GET", "/api/v1/orders/vendor/rentals/active", token=tok_vendor)
+        run(
+            "vendor fulfillment-audit",
+            "GET",
+            f"/api/v1/orders/vendor/orders/{order_id or str(plant_id or 'missing')}/fulfillment-audit",
+            token=tok_vendor,
+            ok=(200,),
+            allow=(403, 404),
+        )
+        run(
+            "vendor rentals buckets",
+            "GET",
+            "/api/v1/vendor/rentals?bucket=OVERDUE&limit=5",
+            token=tok_vendor,
+        )
         if order_id:
             run(
                 "vendor order detail",

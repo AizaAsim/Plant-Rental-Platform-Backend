@@ -56,11 +56,14 @@ enum OrderStatus {
   PENDING
   CONFIRMED
   SLOT_PROPOSED
+  SLOT_CONFIRMED
+  AWAITING_PAYMENT
   PROCESSING
   OUT_FOR_DELIVERY
   DELIVERED
   COMPLETED
   CANCELLED
+  EXPIRED
   RETURNED
 }
 
@@ -78,6 +81,7 @@ enum PaymentType {
   SERVICE_BOOKING
   DEPOSIT
   REFUND
+  FREELANCE_JOB
 }
 
 enum TransactionStatus {
@@ -190,6 +194,7 @@ enum EarningStatus {
 enum EarningType {
   FREELANCE_BOOKING
   NURSERY_TASK
+  FREELANCE_MARKET_JOB
 }
 
 enum PayoutStatus {
@@ -718,6 +723,16 @@ model OrderItem {
   rentalStatus     RentalStatus? @map("rental_status")
   actualReturnDate DateTime?     @map("actual_return_date") @db.Date
   extensionCount   Int           @default(0) @map("extension_count")
+  deliveryProofAt   DateTime?    @map("delivery_proof_at")
+  deliveryCondition String?      @map("delivery_condition") @db.Text
+  deliveryProofUrls Json?        @map("delivery_proof_urls")
+  deliveryLineNotes String?      @map("delivery_line_notes") @db.Text
+  returnProofAt     DateTime?    @map("return_proof_at")
+  returnCondition   String?       @map("return_condition") @db.Text
+  returnProofUrls   Json?        @map("return_proof_urls")
+  returnLineNotes   String?      @map("return_line_notes") @db.Text
+  restocked         Boolean      @default(false)
+  restockedAt       DateTime?    @map("restocked_at")
   createdAt        DateTime      @default(now()) @map("created_at")
 
   order            Order             @relation(fields: [orderId], references: [id], onDelete: Cascade)
@@ -747,6 +762,7 @@ model Payment {
   id                   String            @id @default(uuid())
   orderId              String?           @map("order_id")
   bookingId            String?           @map("booking_id")
+  freelanceJobId       String?           @map("freelance_job_id")
   userId               String            @map("user_id")
   amount               Decimal           @db.Decimal(10, 2)
   paymentType          PaymentType       @map("payment_type")
@@ -762,10 +778,12 @@ model Payment {
   createdAt            DateTime          @default(now()) @map("created_at")
   updatedAt            DateTime          @updatedAt @map("updated_at")
 
-  user    User            @relation(fields: [userId], references: [id])
-  order   Order?          @relation(fields: [orderId], references: [id])
-  booking ServiceBooking? @relation(fields: [bookingId], references: [id])
+  user         User           @relation(fields: [userId], references: [id])
+  order        Order?         @relation(fields: [orderId], references: [id])
+  booking      ServiceBooking? @relation(fields: [bookingId], references: [id])
+  freelanceJob FreelanceJob?  @relation(fields: [freelanceJobId], references: [id], onDelete: SetNull)
 
+  @@index([freelanceJobId])
   @@map("payments")
 }
 
@@ -1042,6 +1060,7 @@ model GardenerEarning {
   gardenerId       String        @map("gardener_id")
   bookingId        String?       @map("booking_id")
   taskId           String?       @map("task_id")
+  freelanceJobId   String?       @unique @map("freelance_job_id")
   earningType      EarningType   @map("earning_type")
   grossAmount      Decimal       @map("gross_amount") @db.Decimal(10, 2)
   commissionRate   Decimal       @default(0) @map("commission_rate") @db.Decimal(5, 4)
@@ -1052,10 +1071,11 @@ model GardenerEarning {
   createdAt        DateTime      @default(now()) @map("created_at")
   updatedAt        DateTime      @updatedAt @map("updated_at")
 
-  gardener Gardener         @relation(fields: [gardenerId], references: [id])
-  booking  ServiceBooking?  @relation(fields: [bookingId], references: [id])
-  task     MaintenanceTask? @relation(fields: [taskId], references: [id])
-  payout   Payout?          @relation(fields: [payoutId], references: [id])
+  gardener     Gardener         @relation(fields: [gardenerId], references: [id])
+  booking      ServiceBooking?  @relation(fields: [bookingId], references: [id])
+  task         MaintenanceTask? @relation(fields: [taskId], references: [id])
+  freelanceJob FreelanceJob?    @relation(fields: [freelanceJobId], references: [id], onDelete: SetNull)
+  payout       Payout?          @relation(fields: [payoutId], references: [id])
 
   @@map("gardener_earnings")
 }
@@ -1350,6 +1370,7 @@ model FreelanceJob {
   timeTo              String   @map("time_to")
   plantDetails        String?  @map("plant_details") @db.Text
   specialInstructions String?  @map("special_instructions") @db.Text
+  budgetAmount        Decimal? @map("budget_amount") @db.Decimal(12, 2)
   status              FreelanceJobStatus @default(OPEN)
   acceptedGardenerId  String?  @map("accepted_gardener_id")
   city                String?
@@ -1360,13 +1381,19 @@ model FreelanceJob {
   completionPhotoUrls Json?     @map("completion_photo_urls")
   reviewRating        Int?     @map("review_rating")
   reviewComment       String?  @map("review_comment") @db.Text
+  cancelledAt        DateTime? @map("cancelled_at")
+  cancellationReason String?   @map("cancellation_reason") @db.Text
+  cancelledByRole    String?   @map("cancelled_by_role")
+  paidAt             DateTime? @map("paid_at")
   createdAt           DateTime @default(now()) @map("created_at")
   updatedAt           DateTime @updatedAt @map("updated_at")
 
-  user     User     @relation("FreelanceJobCustomer", fields: [userId], references: [id], onDelete: Cascade)
-  order    Order?   @relation(fields: [orderId], references: [id], onDelete: SetNull)
-  address  UserAddress @relation(fields: [deliveryAddressId], references: [id])
-  acceptedBy Gardener?  @relation("FreelanceAcceptedBy", fields: [acceptedGardenerId], references: [id], onDelete: SetNull)
+  user            User               @relation("FreelanceJobCustomer", fields: [userId], references: [id], onDelete: Cascade)
+  order           Order?             @relation(fields: [orderId], references: [id], onDelete: SetNull)
+  address         UserAddress        @relation(fields: [deliveryAddressId], references: [id])
+  acceptedBy      Gardener?          @relation("FreelanceAcceptedBy", fields: [acceptedGardenerId], references: [id], onDelete: SetNull)
+  payments        Payment[]
+  gardenerEarning GardenerEarning?
 
   @@index([status, createdAt])
   @@map("freelance_jobs")

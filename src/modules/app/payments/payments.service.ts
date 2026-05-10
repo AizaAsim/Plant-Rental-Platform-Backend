@@ -1,4 +1,10 @@
-import { HttpException, Injectable, NotFoundException, BadRequestException } from "@nestjs/common";
+import {
+  ConflictException,
+  HttpException,
+  Injectable,
+  NotFoundException,
+  BadRequestException,
+} from "@nestjs/common";
 import {
   Prisma,
   PaymentType,
@@ -6,6 +12,7 @@ import {
   OrderStatus,
   PaymentStatus,
   BookingStatus,
+  FreelanceJobStatus,
   PayoutStatus,
   RecipientType,
   EarningStatus,
@@ -20,7 +27,7 @@ import { randomUUID } from "crypto";
 const MOCK_GATEWAY = "MOCK";
 const MIN_PAYOUT_AMOUNT = new Decimal(100);
 
-type PaymentFor = "ORDER" | "BOOKING" | "RENTAL_EXTENSION";
+type PaymentFor = "ORDER" | "BOOKING" | "RENTAL_EXTENSION" | "FREELANCE_JOB";
 
 @Injectable()
 export class PaymentsService {
@@ -32,6 +39,7 @@ export class PaymentsService {
   private mapPaymentForToType(paymentFor: PaymentFor): PaymentType {
     if (paymentFor === "ORDER") return PaymentType.ORDER;
     if (paymentFor === "BOOKING") return PaymentType.SERVICE_BOOKING;
+    if (paymentFor === "FREELANCE_JOB") return PaymentType.FREELANCE_JOB;
     return PaymentType.RENTAL_EXTENSION;
   }
 
@@ -66,7 +74,9 @@ export class PaymentsService {
     let amount = new Decimal(0);
     let orderId: string | null = null;
     let bookingId: string | null = null;
+    let freelanceJobId: string | null = null;
     let metadata: Prisma.InputJsonValue | undefined;
+    let orderForSlotTransition: { id: string; status: OrderStatus } | null = null;
 
     if (payment_for === "ORDER") {
       const order = await this.prisma.order.findFirst({
@@ -75,6 +85,7 @@ export class PaymentsService {
       if (!order) throw new NotFoundException("Order not found");
       amount = order.totalAmount;
       orderId = order.id;
+      orderForSlotTransition = { id: order.id, status: order.status };
     } else if (payment_for === "BOOKING") {
       const booking = await this.prisma.serviceBooking.findFirst({
         where: { id: reference_id, userId },
@@ -82,6 +93,30 @@ export class PaymentsService {
       if (!booking) throw new NotFoundException("Booking not found");
       amount = booking.totalAmount;
       bookingId = booking.id;
+    } else if (payment_for === "FREELANCE_JOB") {
+      const job = await this.prisma.freelanceJob.findFirst({
+        where: { OR: [{ id: reference_id }, { publicId: reference_id }], userId },
+      });
+      if (!job) {
+        throw new NotFoundException("Freelance job not found");
+      }
+      if (job.status !== FreelanceJobStatus.ACCEPTED) {
+        throw new BadRequestException("Job must be in ACCEPTED status before payment");
+      }
+      if (job.budgetAmount == null) {
+        throw new BadRequestException("Job has no budget_amount; payments require an agreed budget on the posting");
+      }
+      if (job.paidAt) {
+        throw new BadRequestException("This job has already been paid");
+      }
+      const pendingPay = await this.prisma.payment.findFirst({
+        where: { freelanceJobId: job.id, status: TransactionStatus.PENDING },
+      });
+      if (pendingPay) {
+        throw new ConflictException("A payment is already pending for this job");
+      }
+      amount = job.budgetAmount;
+      freelanceJobId = job.id;
     } else {
       const ext = await this.prisma.rentalExtension.findFirst({
         where: { id: reference_id },
@@ -100,19 +135,47 @@ export class PaymentsService {
 
     const gatewayOrderId = this.generateGatewayOrderId();
 
-    const payment = await this.prisma.payment.create({
-      data: {
-        userId,
-        orderId,
-        bookingId,
-        amount,
-        paymentType,
-        paymentMethod: payment_method,
-        paymentGateway: MOCK_GATEWAY,
-        gatewayOrderId,
-        status: TransactionStatus.PENDING,
-        ...(metadata != null ? { metadata } : {}),
-      },
+    const payment = await this.prisma.$transaction(async (tx) => {
+      const p = await tx.payment.create({
+        data: {
+          userId,
+          orderId,
+          bookingId,
+          ...(freelanceJobId != null ? { freelanceJobId } : {}),
+          amount,
+          paymentType,
+          paymentMethod: payment_method,
+          paymentGateway: MOCK_GATEWAY,
+          gatewayOrderId,
+          status: TransactionStatus.PENDING,
+          ...(metadata != null ? { metadata } : {}),
+        },
+      });
+      if (
+        payment_for === "ORDER" &&
+        orderForSlotTransition?.status === OrderStatus.SLOT_CONFIRMED
+      ) {
+        const oid = orderForSlotTransition.id;
+        const cur = await tx.order.findUnique({
+          where: { id: oid },
+          select: { workflowMeta: true },
+        });
+        const wm = (cur?.workflowMeta && typeof cur.workflowMeta === "object"
+          ? (cur.workflowMeta as Record<string, unknown>)
+          : {}) as Record<string, unknown>;
+        const hours = Number(process.env.ORDER_PAYMENT_WINDOW_TTL_HOURS ?? 6);
+        await tx.order.update({
+          where: { id: oid },
+          data: {
+            status: OrderStatus.AWAITING_PAYMENT,
+            workflowMeta: {
+              ...wm,
+              paymentWindowExpiresAt: new Date(Date.now() + hours * 3600000).toISOString(),
+            } as Prisma.InputJsonValue,
+          },
+        });
+      }
+      return p;
     });
 
     return {
@@ -157,6 +220,7 @@ export class PaymentsService {
       include: {
         order: { include: { items: true, nursery: true } },
         booking: true,
+        freelanceJob: true,
       },
     });
 
@@ -201,6 +265,38 @@ export class PaymentsService {
             status: EarningStatus.PENDING,
           },
         });
+      }
+    }
+
+    if (payment.freelanceJobId && payment.freelanceJob) {
+      await this.prisma.freelanceJob.update({
+        where: { id: payment.freelanceJobId },
+        data: { paidAt: new Date() },
+      });
+      const fj = payment.freelanceJob;
+      const gid = fj.acceptedGardenerId;
+      if (gid) {
+        const existingGe = await this.prisma.gardenerEarning.findFirst({
+          where: { freelanceJobId: fj.id },
+        });
+        if (!existingGe) {
+          const gross = payment.amount;
+          const commissionRate = new Decimal(0.1);
+          const commissionAmount = gross.times(commissionRate);
+          const net = gross.minus(commissionAmount);
+          await this.prisma.gardenerEarning.create({
+            data: {
+              gardenerId: gid,
+              freelanceJobId: fj.id,
+              earningType: EarningType.FREELANCE_MARKET_JOB,
+              grossAmount: gross,
+              commissionRate,
+              commissionAmount,
+              netEarnings: net,
+              status: EarningStatus.PENDING,
+            },
+          });
+        }
       }
     }
 
