@@ -6,7 +6,7 @@
   "private": true,
   "license": "UNLICENSED",
   "scripts": {
-    "prebuild": "rimraf dist && prisma generate",
+    "prebuild": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && prisma generate",
     "build": "nest build",
     "postbuild": "copyfiles -u 2 \"src/i18n/**/*.json\" \"dist/i18n/\"",
     "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\"",
