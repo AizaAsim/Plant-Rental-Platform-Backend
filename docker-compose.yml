@@ -1,28 +1,53 @@
-services:
-    db:
-        image: 'postgis/postgis:12-3.3'
-        container_name: api-boilerplate2.db
-        ports:
-            - 5438:5432
-        environment:
-            - POSTGRES_USER=postgres
-            - POSTGRES_PASSWORD=click123
-            - POSTGRES_DB=postgres_db_fyp
-        volumes:
-            - 'api_postgres_data:/var/lib/postgresql'
+version: '3.8'
 
-    redis:
-        image: 'bitnami/redis:6.0.16'
-        container_name: api-boilerplate2.redis
-        ports:
-            - 6389:6379
-        environment:
-            - ALLOW_EMPTY_PASSWORD=yes
-        volumes:
-            - 'api_redis_data:/bitnami'
+services:
+
+  backend:
+    build: .
+
+    container_name: mybackend
+
+    ports:
+      - "3002:3002"
+
+    environment:
+      DATABASE_URL: postgres://postgres:click123@db:5432/postgres_db_fyp
+      REDIS_URL: redis://redis:6379
+
+    depends_on:
+      - db
+      - redis
+
+  db:
+    image: 'postgis/postgis:12-3.3'
+
+    container_name: api-boilerplate2.db
+
+    ports:
+      - "5438:5432"
+
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: click123
+      POSTGRES_DB: postgres_db_fyp
+
+    volumes:
+      - api_postgres_data:/var/lib/postgresql/data
+
+  redis:
+    image: 'bitnami/redis:6.0.16'
+
+    container_name: api-boilerplate2.redis
+
+    ports:
+      - "6389:6379"
+
+    environment:
+      ALLOW_EMPTY_PASSWORD: yes
+
+    volumes:
+      - api_redis_data:/bitnami
 
 volumes:
-    api_postgres_data:
-        external: true
-    api_redis_data:
-        external: true
+  api_postgres_data:
+  api_redis_data:

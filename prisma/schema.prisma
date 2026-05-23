@@ -4,9 +4,13 @@ generator client {
   provider = "prisma-client-js"
 }
 
+// Use Supabase transaction pooler (e.g. :6543) for DATABASE_URL at runtime only if needed.
+// Prisma migrate/schema engine cannot use that pooler — set DIRECT_URL to the Dashboard
+// “Direct connection” host (db.<project-ref>.supabase.co:5432, IPv4-compatible).
 datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
 }
 
 // ==================== ENUMS ====================

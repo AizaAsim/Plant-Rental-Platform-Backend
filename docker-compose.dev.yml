@@ -21,7 +21,21 @@ services:
             - ALLOW_EMPTY_PASSWORD=yes
         volumes:
             - 'sabonah_redis_data:/bitnami'
+backend:
+  build: .
 
+  container_name: mybackend
+
+  ports:
+    - "3002:3002"
+
+  environment:
+    DATABASE_URL: postgres://postgres:click123@db:5432/postgres_db_fyp
+    REDIS_URL: redis://redis:6379
+
+  depends_on:
+    - db
+    - redis
 volumes:
     sabonah_postgres_data:
         external: true

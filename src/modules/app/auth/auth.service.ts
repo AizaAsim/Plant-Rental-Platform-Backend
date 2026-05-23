@@ -1,6 +1,7 @@
 // src/auth/auth.service.ts
 import {
   Injectable,
+  Logger,
   UnauthorizedException,
   BadRequestException,
   ConflictException,
@@ -27,6 +28,7 @@ import { PrismaService } from "src/prisma/prisma.service";
 
 @Injectable()
 export class AuthService {
+  private readonly logger = new Logger(AuthService.name);
   private redis: Redis;
 
   constructor(
@@ -35,9 +37,13 @@ export class AuthService {
     private configService: ConfigService
   ) {
     this.redis = new Redis({
-      host: this.configService.get("REDIS_HOST", "localhost"),
-      port: this.configService.get("REDIS_PORT", 6379),
-      password: this.configService.get("REDIS_PASSWORD"),
+      host: this.configService.get("APP_REDIS_HOST"),
+      port: this.configService.get("APP_REDIS_PORT"),
+      password: this.configService.get("APP_REDIS_PASSWORD"),
+    });
+  
+    this.redis.on("error", (err: Error) => {
+      this.logger.warn(`Redis (auth) client error: ${err.message}`);
     });
   }
 

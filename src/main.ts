@@ -31,7 +31,7 @@ async function bootstrap() {
     InjectInterceptors(app);
     InjectSwagger(app);
 
-    /* Start the application on a specified port */
-    await app.listen(AppConfig.APP.PORT || 3000);
+    const port = AppConfig.APP.PORT || 3002;
+    await app.listen(port, '0.0.0.0');
 }
 bootstrap();
