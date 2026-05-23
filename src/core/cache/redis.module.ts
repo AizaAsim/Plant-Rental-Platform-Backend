@@ -12,18 +12,26 @@ const redisCacheLogger = new Logger('RedisCache');
       useFactory: async () => {
         const host = AppConfig.REDIS.HOST ?? '127.0.0.1';
         const port = AppConfig.REDIS.PORT || 6379;
-        const store = await redisStore({
-          socket: {
-            host,
-            port,
-            reconnectStrategy(retries) {
-              if (retries > 20) {
-                return new Error('Redis reconnect limit exceeded');
+        const reconnectStrategy = (retries: number) => {
+          if (retries > 20) {
+            return new Error('Redis reconnect limit exceeded');
+          }
+          return Math.min(retries * 100, 3000);
+        };
+        const password = AppConfig.REDIS.PASSWORD
+          ? { password: AppConfig.REDIS.PASSWORD }
+          : {};
+        const store = await redisStore(
+          AppConfig.REDIS.USE_TLS
+            ? {
+                socket: { host, port, tls: true, reconnectStrategy },
+                ...password,
               }
-              return Math.min(retries * 100, 3000);
-            },
-          },
-        });
+            : {
+                socket: { host, port, reconnectStrategy },
+                ...password,
+              },
+        );
         store.client.on('error', (err: Error) => {
           redisCacheLogger.warn(`Redis cache client error: ${err.message}`);
         });

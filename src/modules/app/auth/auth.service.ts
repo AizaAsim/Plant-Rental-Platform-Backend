@@ -25,6 +25,7 @@ import { ChangePasswordDto } from "./dto/change-password.dto";
 import { User, Prisma, OtpPurpose } from "@prisma/client";
 import { Redis } from "ioredis";
 import { PrismaService } from "src/prisma/prisma.service";
+import AppConfig from "src/configs/app.config";
 
 @Injectable()
 export class AuthService {
@@ -37,9 +38,10 @@ export class AuthService {
     private configService: ConfigService
   ) {
     this.redis = new Redis({
-      host: this.configService.get("APP_REDIS_HOST"),
-      port: this.configService.get("APP_REDIS_PORT"),
-      password: this.configService.get("APP_REDIS_PASSWORD"),
+      host: AppConfig.REDIS.HOST,
+      port: AppConfig.REDIS.PORT,
+      password: AppConfig.REDIS.PASSWORD,
+      ...(AppConfig.REDIS.USE_TLS ? { tls: {} } : {}),
     });
   
     this.redis.on("error", (err: Error) => {

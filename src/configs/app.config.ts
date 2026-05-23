@@ -1,6 +1,14 @@
 import { config } from 'dotenv'
 config();
 
+/** ElastiCache Serverless always uses in-transit encryption (TLS on port 6379). */
+function redisUseTls(): boolean {
+    if (process.env.APP_REDIS_TLS === 'true') return true;
+    if (process.env.APP_REDIS_TLS === 'false') return false;
+    const host = process.env.APP_REDIS_HOST ?? '';
+    return host.includes('cache.amazonaws.com');
+}
+
 const AppConfig = {
     APP: {
         NAME: 'API',
@@ -14,7 +22,9 @@ const AppConfig = {
     },
     REDIS: {
         HOST: process.env.APP_REDIS_HOST,
-        PORT: Number(process.env.APP_REDIS_PORT),
+        PORT: Number(process.env.APP_REDIS_PORT) || 6379,
+        PASSWORD: process.env.APP_REDIS_PASSWORD,
+        USE_TLS: redisUseTls(),
     },
     AWS: {
         ACCESS_KEY: process.env.APP_AWS_ACCESS_KEY,
