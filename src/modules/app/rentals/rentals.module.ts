@@ -5,9 +5,10 @@ import { RentalsService } from "./rentals.service";
 import { PrismaModule } from "src/prisma/prisma.module";
 import { CartModule } from "../cart/cart.module";
 import { RolesGuard } from "../auth/guard/roles.guard";
+import { RentalExtensionModule } from "./rental-extension.module";
 
 @Module({
-  imports: [PrismaModule, CartModule],
+  imports: [PrismaModule, CartModule, RentalExtensionModule],
   controllers: [RentalsController],
   providers: [RentalsService, RolesGuard],
   exports: [RentalsService],

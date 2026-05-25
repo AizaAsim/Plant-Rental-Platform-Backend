@@ -189,7 +189,11 @@ export class RentalsController {
 
   @Post(":id/extend")
   @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: "Extend rental period" })
+  @ApiOperation({
+    summary: "Extend rental period (legacy — use orders extend-rental)",
+    description:
+      "Delegates to shared RentalExtensionPolicyService. Canonical: POST /api/v1/orders/:order_id/items/:item_id/extend-rental",
+  })
   @ApiParam({ name: "id", description: "Rental ID" })
   @ApiResponse({
     status: 200,
@@ -202,7 +206,7 @@ export class RentalsController {
     @Request() req,
     @Param("id") id: string,
     @Body() extendRentalDto: ExtendRentalDto
-  ): Promise<RentalResponseDto> {
+  ): Promise<RentalResponseDto | Record<string, unknown>> {
     return this.rentalsService.extendRental(id, req.user.id, extendRentalDto);
   }
 

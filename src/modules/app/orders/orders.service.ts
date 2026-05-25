@@ -27,6 +27,8 @@ import {
   VENDOR_RENTAL_BUCKETS,
 } from "./vendor-rental-buckets";
 import { resolveOrderId } from "src/common/contract/resolve-entity";
+import { RentalExtensionService } from "../rentals/rental-extension.service";
+import { DomainNotificationsService } from "../notifications/domain-notifications.service";
 import {
   tryFulfillmentLineCondition,
   FULFILLMENT_LINE_CONDITIONS,
@@ -40,7 +42,9 @@ const ASSIGN_MAINTENANCE_SCHEDULES = ["WEEKLY", "BIWEEKLY", "MONTHLY"] as const;
 export class OrdersService {
   constructor(
     private prisma: PrismaService,
-    private cartService: CartService
+    private cartService: CartService,
+    private readonly rentalExtension: RentalExtensionService,
+    private readonly domainNotifications: DomainNotificationsService
   ) {}
 
   /** reason or rejection_reason; trimmed non-empty bounded length */
@@ -968,125 +972,7 @@ export class OrdersService {
 
   // POST /api/v1/orders/{order_id}/items/{item_id}/extend-rental
   async extendRental(userId: string, orderId: string, itemId: string, extendDto: any) {
-    const { new_end_date } = extendDto ?? {};
-    if (!new_end_date) {
-      throw new BadRequestException("new_end_date is required");
-    }
-
-    const oid = await resolveOrderId(this.prisma, orderId);
-    if (!oid) throw new NotFoundException("Order not found");
-
-    const order = await this.prisma.order.findFirst({
-      where: {
-        id: oid,
-        userId,
-      },
-      include: {
-        items: {
-          include: {
-            plant: true,
-          },
-        },
-      },
-    });
-
-    if (!order) {
-      throw new NotFoundException("Order not found");
-    }
-
-    this.assertCustomerOrderAllowsRentalMutation(order, "Rental extension");
-
-    const extendOrderStatuses = new Set<OrderStatus>([
-      OrderStatus.DELIVERED,
-      OrderStatus.COMPLETED,
-    ]);
-    if (!extendOrderStatuses.has(order.status)) {
-      throw new BadRequestException(
-        `Rental extension is only allowed when order status is DELIVERED or COMPLETED (current: ${order.status})`
-      );
-    }
-
-    const orderItem = order.items.find((i) => i.id === itemId);
-
-    if (!orderItem) {
-      throw new NotFoundException("Order item not found");
-    }
-
-    if (orderItem.orderType !== OrderType.RENT) {
-      throw new BadRequestException("Item is not a rental");
-    }
-
-    const rentState = orderItem.rentalStatus;
-    const extendableStatuses: RentalStatus[] = [
-      RentalStatus.ACTIVE,
-      RentalStatus.EXTENDED,
-      RentalStatus.OVERDUE,
-    ];
-    if (!rentState || !extendableStatuses.includes(rentState)) {
-      throw new BadRequestException(
-        `Rental must be ACTIVE, EXTENDED, or OVERDUE to extend (current: ${rentState ?? "unset"})`
-      );
-    }
-
-    const newEndDate = new Date(new_end_date);
-    if (Number.isNaN(newEndDate.getTime())) {
-      throw new BadRequestException("Invalid new_end_date");
-    }
-    const originalEndDate = orderItem.rentEndDate;
-
-    if (!originalEndDate) {
-      throw new BadRequestException("Original end date not found");
-    }
-
-    if (newEndDate <= originalEndDate) {
-      throw new BadRequestException("New end date must be after original end date");
-    }
-
-    // Check availability for extension period
-    const days = Math.ceil((newEndDate.getTime() - originalEndDate.getTime()) / (1000 * 60 * 60 * 24));
-    const months = days / 30;
-    const extensionPrice = (orderItem.plant.rentPriceMonthly || new Decimal(0)).times(months);
-
-    // Create extension record
-    const extension = await this.prisma.rentalExtension.create({
-      data: {
-        orderItemId: itemId,
-        originalEndDate,
-        newEndDate,
-        extensionPrice,
-        paymentStatus: PaymentStatus.PENDING,
-      },
-    });
-
-    // Update order item
-    await this.prisma.orderItem.update({
-      where: { id: itemId },
-      data: {
-        rentEndDate: newEndDate,
-        rentalStatus: RentalStatus.EXTENDED,
-        extensionCount: {
-          increment: 1,
-        },
-      },
-    });
-
-    // Create payment record
-    await this.prisma.payment.create({
-      data: {
-        orderId: order.id,
-        userId,
-        amount: extensionPrice,
-        paymentType: PaymentType.RENTAL_EXTENSION,
-        paymentMethod: order.paymentMethod || "ONLINE",
-        status: TransactionStatus.PENDING,
-      },
-    });
-
-    return {
-      extension,
-      payment_required: true,
-      amount: Number(extensionPrice),
-    };
+    return this.rentalExtension.extendForUser(userId, orderId, itemId, extendDto ?? {});
   }
 
   // POST /api/v1/orders/{order_id}/items/{item_id}/return
@@ -1383,7 +1269,12 @@ export class OrdersService {
       },
     });
 
-    // TODO: Send notification to customer
+    await this.domainNotifications.notifyOrderStatusUpdate({
+      orderId: order.id,
+      orderNumber: order.orderNumber,
+      customerUserId: order.userId,
+      status,
+    });
 
     return updated;
   }
@@ -1468,8 +1359,6 @@ export class OrdersService {
         },
       });
     }
-
-    // TODO: Notify customer
 
     return updated;
   }
@@ -1610,6 +1499,20 @@ export class OrdersService {
     await this.prisma.maintenanceTask.createMany({
       data: tasks,
     });
+
+    const gardenerUser = await this.prisma.gardener.findUnique({
+      where: { id: gardenerId },
+      select: { userId: true },
+    });
+    if (gardenerUser?.userId) {
+      await this.domainNotifications.notifyGardenerAssigned({
+        orderId: order.id,
+        orderNumber: order.orderNumber,
+        customerUserId: orderWithUser.userId,
+        gardenerUserId: gardenerUser.userId,
+        tasksCreated: tasks.length,
+      });
+    }
 
     if (Array.isArray(assignDto.delivery_slots) && assignDto.delivery_slots.length) {
       const o = await this.prisma.order.findUnique({

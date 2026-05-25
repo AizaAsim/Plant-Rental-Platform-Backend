@@ -12,6 +12,7 @@ import {
 } from "@nestjs/common";
 import { ApiBearerAuth, ApiOperation, ApiParam, ApiQuery, ApiTags } from "@nestjs/swagger";
 import { AdminService } from "./admin.service";
+import { OrderComplaintsService } from "../orders/order-complaints.service";
 import { JwtAuthGuard } from "../auth/guard/jwt-auth.guard";
 import { RolesGuard } from "../auth/guard/roles.guard";
 import { Roles } from "../auth/decorators/roles.decorator";
@@ -23,7 +24,10 @@ import { UserRole } from "@prisma/client";
 @Roles(UserRole.ADMIN)
 @ApiBearerAuth()
 export class AdminController {
-  constructor(private readonly adminService: AdminService) {}
+  constructor(
+    private readonly adminService: AdminService,
+    private readonly orderComplaintsService: OrderComplaintsService
+  ) {}
 
   // Users
   @Get("users")
@@ -283,6 +287,25 @@ export class AdminController {
   @ApiOperation({ summary: "Delete skill" })
   async skillDelete(@Param("skill_id") id: string) {
     return this.adminService.deleteSkill(id);
+  }
+
+  @Get("order-complaints")
+  @ApiOperation({
+    summary: "List customer order complaints (admin dashboard)",
+    description:
+      "Ready for admin UI integration. Vendor and admin receive IN_APP notifications when customers POST /api/v1/orders/:order_id/complaints",
+  })
+  @ApiQuery({ name: "status", required: false })
+  @ApiQuery({ name: "page", required: false })
+  @ApiQuery({ name: "limit", required: false })
+  async listOrderComplaints(
+    @Query() q: { status?: string; page?: string; limit?: string }
+  ) {
+    return this.orderComplaintsService.listForAdmin({
+      status: q.status,
+      page: q.page ? Number(q.page) : undefined,
+      limit: q.limit ? Number(q.limit) : undefined,
+    });
   }
 
   @Get("manual-orders")

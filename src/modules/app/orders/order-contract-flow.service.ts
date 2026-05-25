@@ -9,6 +9,7 @@ import {
   FULFILLMENT_LINE_CONDITIONS,
   tryFulfillmentLineCondition,
 } from "./fulfillment-line.constants";
+import { PenaltyService } from "./penalty.service";
 
 type Slot = { id: string; date: string; time_from: string; time_to: string };
 
@@ -21,7 +22,10 @@ export type GardenerProposalStored = {
 
 @Injectable()
 export class OrderContractFlowService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly penaltyService: PenaltyService
+  ) {}
 
   private getMeta(raw: unknown): Record<string, unknown> {
     if (raw && typeof raw === "object" && !Array.isArray(raw)) return raw as Record<string, unknown>;
@@ -532,28 +536,8 @@ export class OrderContractFlowService {
   }
 
   async getPenalty(userId: string, orderIdOrNum: string) {
-    const oid = await resolveOrderId(this.prisma, orderIdOrNum);
-    if (!oid) throw contractFail(ContractErrorCode.RESOURCE_NOT_FOUND, "Order not found", HttpStatus.NOT_FOUND);
-    const order = await this.prisma.order.findFirst({ where: { id: oid, userId } });
-    if (!order) throw contractFail(ContractErrorCode.RESOURCE_NOT_FOUND, "Order not found", HttpStatus.NOT_FOUND);
-    let row = await this.prisma.orderPenalty.findUnique({ where: { orderId: oid } });
-    if (!row) {
-      row = await this.prisma.orderPenalty.create({
-        data: {
-          orderId: oid,
-          overdueDays: 0,
-          runningTotal: new Decimal(0),
-        },
-      });
-    }
-    return contractOk({
-      order_id: order.orderNumber,
-      overdue_days: row.overdueDays,
-      avg_daily_rate: row.avgDailyRate != null ? Number(row.avgDailyRate) : null,
-      penalty_multiplier: row.penaltyMultiplier != null ? Number(row.penaltyMultiplier) : null,
-      running_penalty_total: Number(row.runningTotal),
-      penalty_payment_status: row.payStatus,
-    });
+    const data = await this.penaltyService.getPenaltyForUser(userId, orderIdOrNum);
+    return contractOk(data);
   }
 
   async finalizePenalty(userId: string, orderIdOrNum: string, body: Record<string, unknown>) {
@@ -561,24 +545,22 @@ export class OrderContractFlowService {
     if (!oid) throw contractFail(ContractErrorCode.RESOURCE_NOT_FOUND, "Order not found", HttpStatus.NOT_FOUND);
     const order = await this.prisma.order.findFirst({ where: { id: oid, userId } });
     if (!order) throw contractFail(ContractErrorCode.RESOURCE_NOT_FOUND, "Order not found", HttpStatus.NOT_FOUND);
+    await this.penaltyService.syncPenaltyForOrder(oid, false);
     const row = await this.prisma.orderPenalty.upsert({
       where: { orderId: oid },
       create: {
         orderId: oid,
-        overdueDays: 0,
-        runningTotal: new Decimal(0),
         meta: body as object,
       },
-      update: {
-        meta: body as object,
-        payStatus: "PENDING",
-      },
+      update: { meta: body as object },
     });
     return contractOk({
       order_id: order.orderNumber,
       overdue_days: row.overdueDays,
       penalty_total: Number(row.runningTotal),
       penalty_payment_status: row.payStatus,
+      payment_for: "PENALTY",
+      reference_id: oid,
     });
   }
 

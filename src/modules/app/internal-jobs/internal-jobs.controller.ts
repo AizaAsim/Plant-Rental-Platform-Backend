@@ -5,6 +5,7 @@ import { JwtAuthGuard } from "../auth/guard/jwt-auth.guard";
 import { RolesGuard } from "../auth/guard/roles.guard";
 import { Roles } from "../auth/decorators/roles.decorator";
 import { InternalJobsService } from "./internal-jobs.service";
+import { PenaltyService } from "../orders/penalty.service";
 
 @ApiTags("Internal jobs (contract)")
 @Controller("api/v1/internal/jobs")
@@ -12,7 +13,10 @@ import { InternalJobsService } from "./internal-jobs.service";
 @Roles(UserRole.ADMIN)
 @ApiBearerAuth("bearer")
 export class InternalJobsController {
-  constructor(private readonly svc: InternalJobsService) {}
+  constructor(
+    private readonly svc: InternalJobsService,
+    private readonly penaltyService: PenaltyService
+  ) {}
 
   @Post("orders/expire-unpaid")
   @ApiOperation({ summary: "Expire old unpaid checkout orders (PENDING) + release stock" })
@@ -45,6 +49,13 @@ export class InternalJobsController {
   @ApiOperation({ summary: "Due reminders (MISS-11) — admin stub" })
   async dueReminders(@Body() body: Record<string, unknown>) {
     return this.svc.dueReminders(body);
+  }
+
+  @Post("orders/penalty-sweep")
+  @ApiOperation({ summary: "Mark overdue rentals and accrue penalties (same as daily cron)" })
+  async penaltySweep(@Body() body: { notify?: boolean }) {
+    const result = await this.penaltyService.runDailyPenaltySweep(body?.notify !== false);
+    return { ok: true, data: result };
   }
 
   @Post("freelance-jobs/auto-match")

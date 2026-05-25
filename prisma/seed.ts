@@ -1230,6 +1230,52 @@ async function main() {
     },
   });
 
+  /** Overdue rental for penalty / OVERDUE bucket curl tests */
+  const overdueRentalOrder = await prisma.order.create({
+    data: {
+      orderNumber: "ORD-SEED-1005",
+      userId: customer1.id,
+      nurseryId: nursery2.id,
+      deliveryAddressId: addrC1Home.id,
+      orderType: OrderType.RENT,
+      status: OrderStatus.DELIVERED,
+      subtotal: money(3500),
+      deliveryFee: money(200),
+      taxAmount: money(370),
+      discountAmount: money(0),
+      depositAmount: money(2000),
+      totalAmount: money(6070),
+      paymentStatus: PaymentStatus.PAID,
+      paymentMethod: "card",
+      deliveredAt: daysAgo(45),
+      items: {
+        create: {
+          plantId: snakePlant.id,
+          quantity: 1,
+          orderType: OrderType.RENT,
+          unitPrice: money(3500),
+          depositPerUnit: money(2000),
+          totalPrice: money(3500),
+          rentStartDate: dateOnly(daysAgo(40)),
+          rentEndDate: dateOnly(daysAgo(5)),
+          rentalStatus: RentalStatus.OVERDUE,
+        },
+      },
+    },
+    include: { items: true },
+  });
+
+  await prisma.orderPenalty.create({
+    data: {
+      orderId: overdueRentalOrder.id,
+      overdueDays: 5,
+      avgDailyRate: money(116.67),
+      penaltyMultiplier: money(1),
+      runningTotal: money(583.35),
+      payStatus: "PENDING" as const,
+    },
+  });
+
   console.log("📦 Orders & payments created");
 
   // ─── Service booking & maintenance ─────────────────────────────────────────
@@ -1581,7 +1627,7 @@ async function main() {
 
 🎫 Coupons: RENT10 (10% rent), WELCOME500 (PKR 500 off)
 
-📦 Sample orders: ORD-SEED-1001 (completed rent), 1002 (buy), 1003 (awaiting payment), 1004 (active rent)
+📦 Sample orders: ORD-SEED-1001 (completed rent), 1002 (buy), 1003 (awaiting payment), 1004 (active rent), 1005 (overdue + penalty)
 📅 Booking: BKG-SEED-2001 | Task: TSK-SEED-3001 | Jobs: fj-seed-open-01, fj-seed-done-01
 💬 Chat session: ${chatSession.id}
 `);

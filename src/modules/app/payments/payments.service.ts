@@ -20,6 +20,9 @@ import {
 } from "@prisma/client";
 import { PrismaService } from "src/prisma/prisma.service";
 import { IdempotencyService } from "src/common/contract/idempotency.service";
+import { PenaltyService } from "../orders/penalty.service";
+import { DomainNotificationsService } from "../notifications/domain-notifications.service";
+import { OrderPenaltyPayStatus } from "@prisma/client";
 import { Decimal } from "@prisma/client/runtime/library";
 import { randomUUID } from "crypto";
 
@@ -27,19 +30,27 @@ import { randomUUID } from "crypto";
 const MOCK_GATEWAY = "MOCK";
 const MIN_PAYOUT_AMOUNT = new Decimal(100);
 
-type PaymentFor = "ORDER" | "BOOKING" | "RENTAL_EXTENSION" | "FREELANCE_JOB";
+type PaymentFor =
+  | "ORDER"
+  | "BOOKING"
+  | "RENTAL_EXTENSION"
+  | "FREELANCE_JOB"
+  | "PENALTY";
 
 @Injectable()
 export class PaymentsService {
   constructor(
     private prisma: PrismaService,
-    private readonly idempotency: IdempotencyService
+    private readonly idempotency: IdempotencyService,
+    private readonly penaltyService: PenaltyService,
+    private readonly domainNotifications: DomainNotificationsService
   ) {}
 
   private mapPaymentForToType(paymentFor: PaymentFor): PaymentType {
     if (paymentFor === "ORDER") return PaymentType.ORDER;
     if (paymentFor === "BOOKING") return PaymentType.SERVICE_BOOKING;
     if (paymentFor === "FREELANCE_JOB") return PaymentType.FREELANCE_JOB;
+    if (paymentFor === "PENALTY") return PaymentType.PENALTY;
     return PaymentType.RENTAL_EXTENSION;
   }
 
@@ -97,11 +108,23 @@ export class PaymentsService {
       reference_id: string;
       payment_method: string;
       return_url?: string;
-    }
+    },
+    idempotencyKey?: string
   ) {
     const { payment_for, reference_id, payment_method, return_url } = body;
     if (!payment_for || !reference_id || !payment_method) {
       throw new BadRequestException("payment_for, reference_id and payment_method are required");
+    }
+
+    const route = "POST /api/v1/payments/initiate";
+    if (idempotencyKey) {
+      const replay = await this.idempotency.getReplay(idempotencyKey, route, userId, body);
+      if (replay) {
+        if (replay.statusCode >= 400) {
+          throw new HttpException(replay.body, replay.statusCode);
+        }
+        return replay.body;
+      }
     }
 
     const paymentType = this.mapPaymentForToType(payment_for);
@@ -166,6 +189,28 @@ export class PaymentsService {
       }
       amount = job.budgetAmount;
       freelanceJobId = job.id;
+    } else if (payment_for === "PENALTY") {
+      const order = await this.prisma.order.findFirst({
+        where: { id: reference_id, userId },
+        select: { id: true, orderNumber: true },
+      });
+      if (!order) throw new NotFoundException("Order not found");
+      await this.penaltyService.syncPenaltyForOrder(order.id, false);
+      const penalty = await this.prisma.orderPenalty.findUnique({
+        where: { orderId: order.id },
+      });
+      if (!penalty || penalty.payStatus === OrderPenaltyPayStatus.PAID) {
+        throw new BadRequestException("No pending penalty for this order");
+      }
+      if (penalty.runningTotal.lte(0)) {
+        throw new BadRequestException("Penalty amount is zero");
+      }
+      amount = penalty.runningTotal;
+      orderId = order.id;
+      metadata = {
+        payment_for: "PENALTY",
+        order_penalty_id: penalty.id,
+      };
     } else {
       const ext = await this.prisma.rentalExtension.findFirst({
         where: { id: reference_id },
@@ -174,8 +219,11 @@ export class PaymentsService {
       if (!ext || ext.orderItem.order.userId !== userId) {
         throw new NotFoundException("Rental extension not found");
       }
+      if (ext.paymentStatus === PaymentStatus.PAID) {
+        throw new BadRequestException("This extension is already paid");
+      }
       amount = ext.extensionPrice;
-      orderId = null;
+      orderId = ext.orderItem.orderId;
       metadata = {
         rental_extension_id: reference_id,
         parent_order_id: ext.orderItem.orderId,
@@ -183,6 +231,52 @@ export class PaymentsService {
     }
 
     const result = await this.prisma.$transaction(async (tx) => {
+      if (payment_for === "RENTAL_EXTENSION") {
+        const dup = await tx.payment.findFirst({
+          where: {
+            userId,
+            paymentType: PaymentType.RENTAL_EXTENSION,
+            status: TransactionStatus.PENDING,
+            metadata: { path: ["rental_extension_id"], equals: reference_id },
+          },
+          orderBy: { createdAt: "desc" },
+        });
+        if (dup) {
+          let gid = dup.gatewayOrderId;
+          if (!gid) {
+            gid = this.generateGatewayOrderId();
+            await tx.payment.update({
+              where: { id: dup.id },
+              data: { gatewayOrderId: gid },
+            });
+          }
+          return { payment: dup, gatewayOrderId: gid, reused: true as const };
+        }
+      }
+
+      if (payment_for === "PENALTY" && orderId) {
+        const dup = await tx.payment.findFirst({
+          where: {
+            orderId,
+            userId,
+            paymentType: PaymentType.PENALTY,
+            status: TransactionStatus.PENDING,
+          },
+          orderBy: { createdAt: "desc" },
+        });
+        if (dup) {
+          let gid = dup.gatewayOrderId;
+          if (!gid) {
+            gid = this.generateGatewayOrderId();
+            await tx.payment.update({
+              where: { id: dup.id },
+              data: { gatewayOrderId: gid },
+            });
+          }
+          return { payment: dup, gatewayOrderId: gid, reused: true as const };
+        }
+      }
+
       if (payment_for === "ORDER" && orderId) {
         const dup = await tx.payment.findFirst({
           where: {
@@ -270,7 +364,7 @@ export class PaymentsService {
 
     const { payment, gatewayOrderId, reused } = result;
 
-    return {
+    const out = {
       success: true,
       mock: true,
       payment_id: payment.id,
@@ -279,10 +373,14 @@ export class PaymentsService {
       amount: amount.toString(),
       redirect_url: return_url || `https://mock-gateway.example/pay/${gatewayOrderId}`,
       message: reused
-        ? "Existing pending order payment — continue with the same gateway_order_id"
+        ? "Existing pending payment — continue with the same gateway_order_id"
         : "Mock payment initialized — any verify payload will succeed",
       reused,
     };
+    if (idempotencyKey) {
+      await this.idempotency.save(idempotencyKey, route, userId, body, 201, out);
+    }
+    return out;
   }
 
   async verify(
@@ -455,12 +553,43 @@ export class PaymentsService {
       }
     }
 
-    const meta = payment.metadata as { rental_extension_id?: string } | null;
+    const meta = payment.metadata as {
+      rental_extension_id?: string;
+      payment_for?: string;
+      order_penalty_id?: string;
+      parent_order_id?: string;
+    } | null;
+
     if (meta?.rental_extension_id) {
       await this.prisma.rentalExtension.update({
         where: { id: meta.rental_extension_id },
         data: { paymentStatus: PaymentStatus.PAID },
       });
+      const parentOrderId = meta.parent_order_id ?? payment.orderId;
+      if (parentOrderId) {
+        const ord = await this.prisma.order.findUnique({
+          where: { id: parentOrderId },
+          select: { id: true, orderNumber: true, userId: true },
+        });
+        if (ord) {
+          await this.domainNotifications.notifyExtensionPaymentPaid({
+            orderId: ord.id,
+            orderNumber: ord.orderNumber,
+            customerUserId: ord.userId,
+            amount: Number(payment.amount),
+          });
+        }
+      }
+    }
+
+    if (
+      payment.paymentType === PaymentType.PENALTY &&
+      payment.orderId
+    ) {
+      await this.penaltyService.applyPenaltyPaymentSuccess(
+        payment.orderId,
+        payment.amount
+      );
     }
 
     const out = {

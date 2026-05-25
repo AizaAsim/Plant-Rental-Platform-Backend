@@ -36,7 +36,10 @@ export class PaymentsController {
   @HttpCode(HttpStatus.CREATED)
   @ApiOperation({ summary: "Initiate payment (mock gateway)" })
   async initiate(@Request() req, @Body() body: any) {
-    return this.paymentsService.initiate(req.user.id, body);
+    const key = (req.headers["idempotency-key"] || req.headers["Idempotency-Key"]) as
+      | string
+      | undefined;
+    return this.paymentsService.initiate(req.user.id, body, key);
   }
 
   @Post("verify")

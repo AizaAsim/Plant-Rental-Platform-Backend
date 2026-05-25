@@ -87,6 +87,7 @@ enum PaymentType {
   DEPOSIT
   REFUND
   FREELANCE_JOB
+  PENALTY
 }
 
 enum TransactionStatus {
@@ -305,6 +306,7 @@ model User {
   deviceTokens       DeviceToken[]
   customPackages     CustomPlantPackage[]
   recommendationPreference UserRecommendationPreference?
+  orderComplaints            OrderComplaint[]
   registerMeta     Json?    @map("register_meta")
   mustChangePassword Boolean @default(false) @map("must_change_password")
   idempotencyRecords   IdempotencyRecord[]
@@ -709,6 +711,7 @@ model Order {
   workflowMeta              Json?         @map("workflow_meta")
   manualIntervention        ManualInterventionOrder?
   orderPenalty              OrderPenalty?
+  orderComplaints           OrderComplaint[]
   freelanceJobs             FreelanceJob[]
 
   @@map("orders")
@@ -1451,6 +1454,33 @@ model OrderPenalty {
   order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
 
   @@map("order_penalties")
+}
+
+enum OrderComplaintStatus {
+  OPEN
+  UNDER_REVIEW
+  RESOLVED
+  CLOSED
+}
+
+model OrderComplaint {
+  id              String               @id @default(uuid())
+  complaintNumber String               @unique @map("complaint_number")
+  orderId         String               @map("order_id")
+  userId          String               @map("user_id")
+  subject         String
+  description     String               @db.Text
+  status          OrderComplaintStatus @default(OPEN)
+  attachments     Json?
+  createdAt       DateTime             @default(now()) @map("created_at")
+  updatedAt       DateTime             @updatedAt @map("updated_at")
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([orderId])
+  @@index([userId])
+  @@map("order_complaints")
 }
 
 model FreelanceMatchConfig {

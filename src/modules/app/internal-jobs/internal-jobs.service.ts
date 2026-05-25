@@ -1,7 +1,14 @@
 import { Injectable, Logger } from "@nestjs/common";
-import { OrderStatus, PaymentStatus } from "@prisma/client";
+import {
+  NotificationType,
+  OrderStatus,
+  OrderType,
+  PaymentStatus,
+  RentalStatus,
+} from "@prisma/client";
 import { PrismaService } from "src/prisma/prisma.service";
 import { contractOk } from "src/common/contract/response";
+import { DomainNotificationsService } from "../notifications/domain-notifications.service";
 
 export type ExpireReason = "PAYMENT_TIMEOUT" | "SLOT_SELECTION_EXPIRED" | "PAYMENT_WINDOW_EXPIRED";
 
@@ -9,7 +16,10 @@ export type ExpireReason = "PAYMENT_TIMEOUT" | "SLOT_SELECTION_EXPIRED" | "PAYME
 export class InternalJobsService {
   private readonly log = new Logger(InternalJobsService.name);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly domainNotifications: DomainNotificationsService
+  ) {}
 
   private getMeta(raw: unknown): Record<string, unknown> {
     if (raw && typeof raw === "object" && !Array.isArray(raw)) return raw as Record<string, unknown>;
@@ -169,7 +179,70 @@ export class InternalJobsService {
 
   async dueReminders(body: Record<string, unknown>) {
     const dryRun = body.dry_run === true;
-    return contractOk({ dry_run: dryRun, message: "Hook for notifications / D-3 reminders" });
+    const today = new Date();
+    today.setUTCHours(0, 0, 0, 0);
+    const in3 = new Date(today);
+    in3.setUTCDate(in3.getUTCDate() + 3);
+
+    const lines = await this.prisma.orderItem.findMany({
+      where: {
+        orderType: OrderType.RENT,
+        rentalStatus: { in: [RentalStatus.ACTIVE, RentalStatus.EXTENDED] },
+        rentEndDate: { not: null },
+        order: {
+          status: { in: [OrderStatus.DELIVERED, OrderStatus.COMPLETED] },
+        },
+      },
+      include: {
+        order: { select: { id: true, orderNumber: true, userId: true, nurseryId: true } },
+      },
+    });
+
+    const dueToday: string[] = [];
+    const dueIn3: string[] = [];
+
+    for (const line of lines) {
+      if (!line.rentEndDate) continue;
+      const end = new Date(line.rentEndDate);
+      end.setUTCHours(0, 0, 0, 0);
+      const orderId = line.order.id;
+      if (end.getTime() === today.getTime()) {
+        dueToday.push(orderId);
+        if (!dryRun) {
+          await this.domainNotifications.notifyOrderStatusUpdate({
+            orderId,
+            orderNumber: line.order.orderNumber,
+            customerUserId: line.order.userId,
+            status: "RENTAL_DUE_TODAY",
+          });
+          await this.domainNotifications.notifyVendorByNurseryId(
+            line.order.nurseryId,
+            "Rental due today",
+            `Order ${line.order.orderNumber} rental ends today.`,
+            NotificationType.RENTAL,
+            "ORDER",
+            orderId
+          );
+        }
+      } else if (end.getTime() === in3.getTime()) {
+        dueIn3.push(orderId);
+        if (!dryRun) {
+          await this.domainNotifications.notifyOrderStatusUpdate({
+            orderId,
+            orderNumber: line.order.orderNumber,
+            customerUserId: line.order.userId,
+            status: "RENTAL_DUE_IN_3_DAYS",
+          });
+        }
+      }
+    }
+
+    return contractOk({
+      dry_run: dryRun,
+      due_today_orders: [...new Set(dueToday)],
+      due_in_3_days_orders: [...new Set(dueIn3)],
+      scanned_lines: lines.length,
+    });
   }
 
   async autoMatch(body: Record<string, unknown>) {

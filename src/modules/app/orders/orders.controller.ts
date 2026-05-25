@@ -23,6 +23,7 @@ import {
 } from "@nestjs/swagger";
 import { OrdersService } from "./orders.service";
 import { OrderContractFlowService } from "./order-contract-flow.service";
+import { OrderComplaintsService } from "./order-complaints.service";
 import {
   assignGardenerApiBody,
   completeDeliveryFulfillmentApiBody,
@@ -45,6 +46,7 @@ export class OrdersController {
   constructor(
     private readonly ordersService: OrdersService,
     private readonly orderContractFlow: OrderContractFlowService,
+    private readonly orderComplaints: OrderComplaintsService,
     private readonly usersService: UsersService
   ) {}
 
@@ -204,6 +206,33 @@ export class OrdersController {
     @Body() body: Record<string, unknown>
   ) {
     return this.orderContractFlow.finalizePenalty(req.user.id, orderId, body);
+  }
+
+  @Post(":order_id/complaints")
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.USER)
+  @ApiBearerAuth()
+  @HttpCode(HttpStatus.CREATED)
+  @ApiOperation({
+    summary: "Submit order complaint (Foodpanda-style)",
+    description:
+      "Notifies vendor app and admin dashboard via in-app notifications. Admin list: GET /api/v1/admin/order-complaints",
+  })
+  async createOrderComplaint(
+    @Request() req,
+    @Param("order_id") orderId: string,
+    @Body() body: { subject: string; description: string; attachments?: string[] }
+  ) {
+    return this.orderComplaints.create(req.user.id, orderId, body);
+  }
+
+  @Get("my-complaints")
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.USER)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: "List your order complaints" })
+  async listMyComplaints(@Request() req, @Query() query: { page?: number; limit?: number }) {
+    return this.orderComplaints.listForUser(req.user.id, query);
   }
 
   @Get(":order_id/fulfillment-summary")
@@ -572,6 +601,15 @@ export class OrdersController {
     @Body() rejectDto: any
   ) {
     return this.ordersService.rejectOrder(req.user.id, orderId, rejectDto);
+  }
+
+  @Get("vendor/complaints")
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.VENDOR)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: "List complaints for vendor nursery orders" })
+  async listVendorComplaints(@Request() req, @Query() query: { page?: number; limit?: number }) {
+    return this.orderComplaints.listForVendor(req.user.id, query);
   }
 
   @Post("vendor/orders/:order_id/assign-gardener")

@@ -359,12 +359,38 @@
     </div>
 
     <div class="phase">
-      <div class="phase-num">F — PENALTY (simplified API)</div>
+      <div class="phase-num">F — OVERDUE &amp; PENALTY</div>
       <ol class="steps">
-        <li><code>GET /api/v1/orders/:order_id/penalty</code></li>
-        <li><code>POST /api/v1/orders/:order_id/finalize-penalty</code></li>
+        <li><strong>Daily cron</strong> (<code>rental_penalty_sweep</code>, 01:00 server time): sets rental lines to <code>OVERDUE</code> when <code>rent_end_date</code> &lt; today; upserts <code>OrderPenalty</code> (days × daily rate × <code>PENALTY_DAILY_MULTIPLIER</code>, default 1).</li>
+        <li><code>GET /api/v1/orders/:order_id/penalty</code> — live accrual for customer.</li>
+        <li><code>POST /api/v1/payments/initiate</code> with <code>payment_for: "PENALTY"</code>, <code>reference_id</code> = order UUID.</li>
+        <li><code>POST /api/v1/payments/verify</code> — marks penalty <code>PAID</code>, restores <code>OVERDUE</code> lines to <code>ACTIVE</code>, notifies customer + vendor.</li>
+        <li><code>POST /api/v1/orders/:order_id/finalize-penalty</code> — vendor/collection metadata (optional).</li>
       </ol>
-      <p class="note">Accrual rules may be simpler than a full finance spec; treat as <strong>integration surface</strong> and confirm numbers with backend for production.</p>
+      <p class="note">Manual ops: <code>POST /api/v1/internal/jobs/orders/penalty-sweep</code> (admin). Env: <code>PENALTY_CRON_ENABLED</code>, <code>PENALTY_DAILY_MULTIPLIER</code>.</p>
+    </div>
+
+    <div class="phase">
+      <div class="phase-num">G — RENTAL EXTENSION (single policy)</div>
+      <ol class="steps">
+        <li><strong>Canonical:</strong> <code>POST /api/v1/orders/:order_id/items/:item_id/extend-rental</code> — body <code>new_end_date</code> <em>or</em> <code>additional_weeks</code>. All rules enforced by <code>RentalExtensionPolicyService</code> (order DELIVERED/COMPLETED, rental ACTIVE/EXTENDED/OVERDUE, 7-day window unless already overdue, plant availability).</li>
+        <li>Creates <code>RentalExtension</code>, pending <code>Payment</code> with <code>metadata.rental_extension_id</code>, reschedules <code>MaintenanceTask</code> visits, notifies customer/vendor/gardener.</li>
+        <li>Pay: <code>payment_for: "RENTAL_EXTENSION"</code>, <code>reference_id</code> = extension UUID.</li>
+        <li><strong>Legacy (delegates to same policy):</strong> <code>POST /api/v1/rentals/:id/extend</code> — prefer orders route for new apps.</li>
+      </ol>
+      <p class="warn-note">Do <strong>not</strong> implement a second extension API in mobile — both paths call the same module.</p>
+    </div>
+
+    <div class="phase">
+      <div class="phase-num">H — ORDER COMPLAINTS (Foodpanda-style)</div>
+      <ol class="steps">
+        <li>Customer: <code>POST /api/v1/orders/:order_id/complaints</code> — <code>subject</code>, <code>description</code>, optional <code>attachments[]</code>.</li>
+        <li>Backend sends <strong>IN_APP</strong> notifications to <strong>vendor</strong> (nursery owner) and <strong>all admins</strong>.</li>
+        <li>Vendor inbox: <code>GET /api/v1/orders/vendor/complaints</code>.</li>
+        <li>Admin dashboard (ready to wire): <code>GET /api/v1/admin/order-complaints</code>.</li>
+        <li>Customer history: <code>GET /api/v1/orders/my-complaints</code>.</li>
+      </ol>
+      <p class="note"><strong>Admin team:</strong> you can implement the dashboard list against <code>GET /api/v1/admin/order-complaints</code> now — notifications already fire on create.</p>
     </div>
 
     <h2>3. Parallel flows (separate from nursery rental order state machine)</h2>

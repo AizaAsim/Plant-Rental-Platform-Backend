@@ -14,12 +14,13 @@ import { CheckAvailabilityDto } from "./dto/check-availability.dto";
 import { RentalFilterDto } from "./dto/rental-filter.dto";
 import { Prisma, RentalStatus, TransactionStatus } from "@prisma/client";
 import { PrismaService } from "src/prisma/prisma.service";
+import { RentalExtensionService } from "./rental-extension.service";
 
 @Injectable()
 export class RentalsService {
   constructor(
-    private prisma: PrismaService
-    // private emailService: EmailService
+    private prisma: PrismaService,
+    private readonly rentalExtension: RentalExtensionService
   ) {}
 
   async create(userId: string, createRentalDto: CreateRentalDto) {
@@ -331,129 +332,17 @@ export class RentalsService {
     userId: string,
     extendRentalDto: ExtendRentalDto
   ) {
-    const { additionalWeeks, reason } = extendRentalDto;
-
-    // Rentals are now OrderItems with orderType=RENT
-    const rental = await this.prisma.orderItem.findFirst({
-      where: {
-        id,
-        order: { userId },
-        orderType: "RENT" as any,
-        rentalStatus: { in: ["ACTIVE", "EXTENDED"] as any },
-      },
-      include: {
-        plant: true,
-        order: {
-          include: {
-            payments: true,
-          },
-        },
-      },
+    const result = await this.rentalExtension.extendByOrderItemId(id, userId, {
+      additional_weeks: extendRentalDto.additionalWeeks,
+      reason: extendRentalDto.reason,
     });
-
-    if (!rental) {
-      throw new NotFoundException("Active rental not found");
-    }
-
-    // Check if extension is allowed (e.g., within 7 days of end date)
-    const today = new Date();
-    const endDate = rental.rentEndDate ? new Date(rental.rentEndDate) : null;
-    if (!endDate) {
-      throw new BadRequestException("Rental end date not found");
-    }
-    const daysUntilEnd = Math.ceil(
-      (endDate.getTime() - today.getTime()) / (1000 * 60 * 60 * 24)
-    );
-
-    if (daysUntilEnd > 7) {
-      throw new BadRequestException(
-        "Extensions can only be requested within 7 days of rental end date"
-      );
-    }
-
-    // Check availability for extended period
-    const newEndDate = new Date(endDate);
-    newEndDate.setDate(newEndDate.getDate() + additionalWeeks * 7);
-
-    const isAvailable = await this.checkPlantAvailability(
-      rental.plantId,
-      endDate,
-      newEndDate,
-      1
-    );
-
-    if (!isAvailable) {
-      throw new ConflictException(
-        "Plant is not available for the extended period"
-      );
-    }
-
-    // Calculate additional costs
-    const weeklyRate = Number(rental.plant.rentPriceMonthly || 0) / 4;
-    const additionalRentalCost = weeklyRate * additionalWeeks;
-    let additionalMaintenanceCost = 0;
-    // Maintenance costs would be calculated separately if maintenance is included
-
-    const additionalTotalCost =
-      additionalRentalCost + additionalMaintenanceCost;
-
-    // Update rental in transaction
-    const updatedRental = await this.prisma.$transaction(async (prisma) => {
-      // Update rental end date
-      const updated = await prisma.orderItem.update({
-        where: { id },
-        data: {
-          rentEndDate: newEndDate,
-          rentalStatus: "EXTENDED" as any,
-          extensionCount: { increment: 1 },
-        },
-        include: {
-          plant: true,
-          order: {
-            include: {
-              nursery: true,
-              user: true,
-            },
-          },
-        },
-      });
-
-      // Create payment record for extension
-      await prisma.payment.create({
-        data: {
-          userId,
-          orderId: rental.orderId,
-          paymentType: "ORDER" as any,
-          paymentMethod: "CARD",
-          amount: additionalTotalCost,
-          status: "PENDING" as any,
-          metadata: {
-            type: "rental_extension",
-            weeks: additionalWeeks,
-            reason,
-          },
-        },
-      });
-
-      return updated;
-    });
-
-    // Send extension confirmation email
-    // await this.emailService.sendRentalExtensionConfirmation(
-    //   updatedRental.user.email,
-    //   updatedRental,
-    //   additionalWeeks
-    // );
-
-    const rentalDto = this.mapOrderItemToRentalDto(updatedRental);
     return {
-      ...rentalDto,
-      extensionDetails: {
-        additionalWeeks,
-        additionalCost: additionalTotalCost,
-        newEndDate,
-        reason,
-      },
+      ...result,
+      deprecated_route: true,
+      canonical_route:
+        "POST /api/v1/orders/:order_id/items/:item_id/extend-rental",
+      message:
+        "This rentals extend endpoint delegates to the shared extension policy. Prefer the orders extend-rental route.",
     };
   }
 
