@@ -54,9 +54,15 @@ const AppConfig = {
         PLANT_DOCTOR_BASE_URL: (
             process.env.APP_AI_PLANT_DOCTOR_URL || 'https://plant-doctor-y26i.onrender.com'
         ).replace(/\/$/, ''),
-        PLANT_RECOMMENDER_BASE_URL: (
+        /** Plant recommendation RAG chatbot (POST /chat). */
+        PLANT_RAG_CHATBOT_BASE_URL: (
+            process.env.APP_AI_PLANT_RAG_CHATBOT_URL ||
             process.env.APP_AI_PLANT_RECOMMENDER_URL ||
-            'https://plant-recommendation-system.onrender.com'
+            'https://plant-rag-chatbot-en.onrender.com'
+        ).replace(/\/$/, ''),
+        /** @deprecated Legacy structured recommender; set APP_AI_PLANT_RECOMMENDER_LEGACY_URL to enable. */
+        PLANT_RECOMMENDER_LEGACY_BASE_URL: (
+            process.env.APP_AI_PLANT_RECOMMENDER_LEGACY_URL || ''
         ).replace(/\/$/, ''),
         TIMEOUT_MS: Number(process.env.APP_AI_TIMEOUT_MS) || 120_000,
     },

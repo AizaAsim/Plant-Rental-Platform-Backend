@@ -26,6 +26,7 @@ import {
 import { UserRole } from "@prisma/client";
 import { AiService, UploadedImageFile } from "./ai.service";
 import { RecommendFeedbackDto } from "./dto/recommend-feedback.dto";
+import { PlantChatDto } from "./dto/plant-chat.dto";
 import { RecommendOverrideDto } from "../preferences/dto/recommend-override.dto";
 import { JwtAuthGuard } from "../auth/guard/jwt-auth.guard";
 import { RolesGuard } from "../auth/guard/roles.guard";
@@ -124,29 +125,24 @@ export class AiController {
     },
   })
   @ApiOperation({
-    summary: "Plant recommendations (proxies upstream POST /recommend)",
+    summary: "Plant recommendations (Plant RAG chatbot POST /chat)",
     description:
-      "**Authentication:** JWT bearer required (Authorize in Swagger must use scheme `bearer`). " +
-      "**Payload:** Merged from `PUT /api/v1/preferences/recommendation` plus optional body overrides. " +
-      "If nothing is saved yet and the body does not supply all required fields, this API returns **400** with a clear hint. " +
-      "**422** is usually the upstream recommender rejecting the merged payload (this service forwards 4xx status codes). " +
-      "Returns `log_id` for POST .../recommender/feedback/:log_id. Enums: `light_pref`, `water_pref`, `space` (lowercase).",
+      "**Upstream:** `https://plant-rag-chatbot-en.onrender.com/chat` (override with `APP_AI_PLANT_RAG_CHATBOT_URL`). " +
+      "Builds a natural-language prompt from `PUT /api/v1/preferences/recommendation` plus optional body overrides. " +
+      "Returns `response`, `sources`, parsed `recommendations[]`, and `catalog_matches` from your active plant catalogue.",
   })
   @ApiResponse({ status: 400, description: "Missing prefs — save via PUT /preferences/recommendation or send overrides in body" })
   @ApiResponse({
-    status: 422,
-    description: "Often forwarded from the upstream recommender (validation on merged payload)",
-  })
-  @ApiResponse({
     status: 200,
-    description: "Upstream recommender JSON (includes log_id, live_weather, recommendations, …)",
+    description: "RAG chatbot response",
     schema: {
       example: {
-        log_id: 42,
-        city: "Karachi",
-        live_weather: { temperature_c: 28, humidity_pct: 55 },
-        preferences: {},
-        recommendations: [{ rank: 1, plant: "Snake Plant", confidence: "high" }],
+        engine: "plant-rag-chatbot",
+        preferences: { city: "Karachi", light_pref: "low", pet_friendly: true, space: "small", top_n: 3 },
+        response: "Here are three low-light plants…",
+        sources: ["…"],
+        recommendations: [{ rank: 1, summary: "1. **Snake Plant** …" }],
+        catalog_matches: [{ plant_id: "uuid", name: "Snake Plant" }],
       },
     },
   })
@@ -155,6 +151,27 @@ export class AiController {
     @Body() body: RecommendOverrideDto
   ) {
     return this.aiService.recommendPlants(req.user.id, body);
+  }
+
+  @Post("recommender/chat")
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.USER, UserRole.VENDOR, UserRole.GARDENER, UserRole.ADMIN)
+  @ApiBearerAuth("bearer")
+  @UsePipes(
+    new ValidationPipe({
+      transform: true,
+      whitelist: true,
+      forbidNonWhitelisted: true,
+    })
+  )
+  @ApiBody({ type: PlantChatDto })
+  @ApiOperation({
+    summary: "Free-form plant Q&A (proxies Plant RAG POST /chat)",
+    description:
+      "Send any plant care or recommendation question. Same upstream as preference-based recommend.",
+  })
+  async chat(@Body() body: PlantChatDto) {
+    return this.aiService.chatRecommend(body);
   }
 
   @Post("recommender/feedback/:log_id")
@@ -178,15 +195,16 @@ export class AiController {
   }
 
   @Get("recommender/health")
-  @ApiOperation({ summary: "Recommender upstream health" })
+  @ApiOperation({ summary: "Plant RAG chatbot health probe (POST /chat ping)" })
   async recommenderHealth() {
     return this.aiService.recommenderHealth();
   }
 
   @Get("recommender/schema")
   @ApiOperation({
-    summary: "Recommender input schema (dropdowns)",
-    description: "Proxies GET /schema from the plant recommendation service.",
+    summary: "Recommendation preference schema (for mobile dropdowns)",
+    description:
+      "App-defined schema for PUT /preferences/recommendation. The RAG chatbot does not expose /schema.",
   })
   async recommenderSchema() {
     return this.aiService.recommenderSchema();

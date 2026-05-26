@@ -110,4 +110,27 @@ export class PreferencesService {
     }
     return payload;
   }
+
+  /** Natural-language prompt for the Plant RAG chatbot POST /chat. */
+  buildRagRecommendMessage(payload: Record<string, unknown>): string {
+    const city = String(payload.city ?? "");
+    const light = String(payload.light_pref ?? "medium");
+    const water =
+      payload.water_pref != null && String(payload.water_pref).length
+        ? String(payload.water_pref)
+        : "flexible";
+    const pet = payload.pet_friendly === true ? "yes" : "no";
+    const space = String(payload.space ?? "medium");
+    const topN = Number(payload.top_n) || 3;
+
+    return (
+      `I need plant recommendations for a home in ${city}. ` +
+      `Light at the spot: ${light}. ` +
+      `How often I can water: ${water}. ` +
+      `Pet-friendly plants required: ${pet}. ` +
+      `Available space: ${space}. ` +
+      `Please recommend exactly ${topN} specific houseplants that fit these constraints. ` +
+      `For each plant, give the common name, why it fits, and one care tip.`
+    );
+  }
 }

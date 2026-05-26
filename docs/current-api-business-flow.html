@@ -437,8 +437,13 @@
     </table>
     <p class="note"><strong>Browse freelancers (profiles):</strong> still <code>GET /api/v1/gardeners/freelance</code> — different resource from posting a <code>FreelanceJob</code>.</p>
 
-    <h3>Preferences (recommender)</h3>
-    <pre class="api-line">GET/PUT  /api/v1/preferences/recommendation  →  POST /api/v1/ai/recommender/recommend  (optional body overrides)</pre>
+    <h3>Plant recommendations (RAG chatbot)</h3>
+    <p>Upstream: <code>https://plant-rag-chatbot-en.onrender.com/chat</code> (env <code>APP_AI_PLANT_RAG_CHATBOT_URL</code>).</p>
+    <pre class="api-line">GET/PUT  /api/v1/preferences/recommendation
+POST     /api/v1/ai/recommender/recommend   → builds prompt from prefs, proxies POST /chat
+POST     /api/v1/ai/recommender/chat         → free-form { "message": "..." }
+GET      /api/v1/ai/recommender/health
+GET      /api/v1/ai/recommender/schema       → app-defined preference fields</pre>
 
     <h3>Internal / admin (ops)</h3>
     <pre class="api-line">POST /api/v1/internal/jobs/...  (admin) · GET/PUT /api/v1/admin/settings/freelance-match-config · manual-orders</pre>
