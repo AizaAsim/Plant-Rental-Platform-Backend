@@ -1,8 +1,10 @@
 import { Injectable, NotFoundException } from "@nestjs/common";
 import {
+  NotificationType,
   PaymentStatus,
   PaymentType,
   Prisma,
+  RentalExtensionVendorApproval,
   RentalStatus,
   TaskStatus,
   TaskType,
@@ -24,6 +26,14 @@ export class RentalExtensionService {
     private readonly domainNotifications: DomainNotificationsService
   ) {}
 
+  private requireVendorExtensionApproval(): boolean {
+    return (
+      String(process.env.RENTAL_EXTENSION_VENDOR_APPROVAL ?? "")
+        .toLowerCase() === "true" ||
+      process.env.RENTAL_EXTENSION_VENDOR_APPROVAL === "1"
+    );
+  }
+
   async extendForUser(
     userId: string,
     orderIdOrNum: string,
@@ -40,6 +50,41 @@ export class RentalExtensionService {
       input,
     });
 
+    const needVendor = this.requireVendorExtensionApproval();
+
+    if (needVendor) {
+      const extension = await this.prisma.rentalExtension.create({
+        data: {
+          orderItemId: orderItem.id,
+          originalEndDate: validated.originalEndDate,
+          newEndDate: validated.newEndDate,
+          extensionPrice: validated.extensionPrice,
+          paymentStatus: PaymentStatus.PENDING,
+          vendorApprovalStatus: RentalExtensionVendorApproval.PENDING_VENDOR,
+        },
+      });
+
+      await this.domainNotifications.notifyVendorByNurseryId(
+        order.nurseryId,
+        "Rental extension needs approval",
+        `Order ${order.orderNumber}: customer requested extension to ${validated.newEndDate.toISOString().slice(0, 10)} (${Number(validated.extensionPrice)}). Open vendor app to approve or reject.`,
+        NotificationType.RENTAL,
+        "RENTAL_EXTENSION",
+        extension.id
+      );
+
+      return {
+        extension,
+        awaiting_vendor_approval: true,
+        payment_required: false,
+        amount: Number(validated.extensionPrice),
+        rental_extension_id: extension.id,
+        proposed_new_end_date: validated.newEndDate.toISOString().slice(0, 10),
+        message:
+          "Extension is pending vendor approval. After approval you will pay via POST /api/v1/payments/initiate with payment_for RENTAL_EXTENSION.",
+      };
+    }
+
     const extension = await this.prisma.$transaction(async (tx) => {
       const ext = await tx.rentalExtension.create({
         data: {
@@ -48,6 +93,7 @@ export class RentalExtensionService {
           newEndDate: validated.newEndDate,
           extensionPrice: validated.extensionPrice,
           paymentStatus: PaymentStatus.PENDING,
+          vendorApprovalStatus: RentalExtensionVendorApproval.AUTO_APPROVED,
         },
       });
 
@@ -186,5 +232,167 @@ export class RentalExtensionService {
     if (newTasks.length > 0) {
       await tx.maintenanceTask.createMany({ data: newTasks });
     }
+  }
+
+  async approveExtensionByVendor(
+    vendorUserId: string,
+    orderIdOrNum: string,
+    extensionId: string
+  ) {
+    const nursery = await this.prisma.nursery.findUnique({
+      where: { vendorId: vendorUserId },
+      select: { id: true },
+    });
+    if (!nursery) throw new NotFoundException("Nursery not found");
+
+    const oid = await resolveOrderId(this.prisma, orderIdOrNum);
+    if (!oid) throw new NotFoundException("Order not found");
+
+    const ext = await this.prisma.rentalExtension.findFirst({
+      where: {
+        id: extensionId,
+        vendorApprovalStatus: RentalExtensionVendorApproval.PENDING_VENDOR,
+        orderItem: { orderId: oid, order: { nurseryId: nursery.id } },
+      },
+      include: {
+        orderItem: {
+          include: {
+            order: {
+              select: {
+                id: true,
+                userId: true,
+                orderNumber: true,
+                paymentMethod: true,
+                nurseryId: true,
+              },
+            },
+          },
+        },
+      },
+    });
+    if (!ext) {
+      throw new NotFoundException("Pending extension not found for this order");
+    }
+
+    const order = ext.orderItem.order;
+    const userId = order.userId;
+    const validated = {
+      originalEndDate: ext.originalEndDate,
+      newEndDate: ext.newEndDate,
+      extensionPrice: ext.extensionPrice,
+    };
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.rentalExtension.update({
+        where: { id: ext.id },
+        data: { vendorApprovalStatus: RentalExtensionVendorApproval.APPROVED },
+      });
+
+      await tx.orderItem.update({
+        where: { id: ext.orderItemId },
+        data: {
+          rentEndDate: validated.newEndDate,
+          rentalStatus: RentalStatus.EXTENDED,
+          extensionCount: { increment: 1 },
+        },
+      });
+
+      await tx.payment.create({
+        data: {
+          orderId: order.id,
+          userId,
+          amount: validated.extensionPrice,
+          paymentType: PaymentType.RENTAL_EXTENSION,
+          paymentMethod: order.paymentMethod || "ONLINE",
+          status: TransactionStatus.PENDING,
+          metadata: {
+            rental_extension_id: ext.id,
+            parent_order_id: order.id,
+            order_item_id: ext.orderItemId,
+          },
+        },
+      });
+
+      await this.rescheduleMaintenanceInTx(
+        tx,
+        ext.orderItemId,
+        validated.originalEndDate,
+        validated.newEndDate
+      );
+    });
+
+    await this.domainNotifications.notifyRentalExtension({
+      orderId: order.id,
+      orderNumber: order.orderNumber,
+      orderItemId: ext.orderItemId,
+      nurseryId: order.nurseryId,
+      customerUserId: userId,
+      newEndDate: validated.newEndDate,
+      amount: Number(validated.extensionPrice),
+    });
+
+    return {
+      extension_id: ext.id,
+      payment_required: true,
+      amount: Number(validated.extensionPrice),
+      rental_extension_id: ext.id,
+      new_end_date: validated.newEndDate.toISOString().slice(0, 10),
+      message:
+        "Vendor approved. Customer pays via POST /api/v1/payments/initiate with payment_for RENTAL_EXTENSION.",
+    };
+  }
+
+  async rejectExtensionByVendor(
+    vendorUserId: string,
+    orderIdOrNum: string,
+    extensionId: string,
+    reason?: string
+  ) {
+    const nursery = await this.prisma.nursery.findUnique({
+      where: { vendorId: vendorUserId },
+      select: { id: true },
+    });
+    if (!nursery) throw new NotFoundException("Nursery not found");
+
+    const oid = await resolveOrderId(this.prisma, orderIdOrNum);
+    if (!oid) throw new NotFoundException("Order not found");
+
+    const ext = await this.prisma.rentalExtension.findFirst({
+      where: {
+        id: extensionId,
+        vendorApprovalStatus: RentalExtensionVendorApproval.PENDING_VENDOR,
+        orderItem: { orderId: oid, order: { nurseryId: nursery.id } },
+      },
+      include: {
+        orderItem: {
+          include: {
+            order: { select: { id: true, userId: true, orderNumber: true } },
+          },
+        },
+      },
+    });
+    if (!ext) throw new NotFoundException("Pending extension not found for this order");
+
+    await this.prisma.rentalExtension.update({
+      where: { id: ext.id },
+      data: {
+        vendorApprovalStatus: RentalExtensionVendorApproval.REJECTED,
+        vendorRejectionReason: reason?.trim() || null,
+      },
+    });
+
+    await this.domainNotifications.notifyExtensionRejectedByVendor({
+      customerUserId: ext.orderItem.order.userId,
+      orderId: ext.orderItem.order.id,
+      orderNumber: ext.orderItem.order.orderNumber,
+      extensionId: ext.id,
+      reason: reason?.trim(),
+    });
+
+    return {
+      extension_id: ext.id,
+      vendor_approval_status: RentalExtensionVendorApproval.REJECTED,
+      message: "Extension request rejected. Rental dates unchanged.",
+    };
   }
 }

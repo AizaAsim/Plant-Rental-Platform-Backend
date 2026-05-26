@@ -115,8 +115,14 @@ export class OrdersController {
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(UserRole.USER)
   @ApiBearerAuth()
-  @ApiOperation({ summary: "List customer's active rentals (order lines)" })
-  @ApiResponse({ status: 200, description: "Active rentals retrieved" })
+  @ApiOperation({
+    summary: "Customer rental hub — aggregated buckets (active, overdue, pickup pending, penalties)",
+    description:
+      "Returns `ongoing`, `overdue`, `pickup_pending`, `pending_vendor_extensions`, and flat `items` with `customer_rental_bucket`, `penalty`, `flags`, and `ui_hints` " +
+      "(CONFIRMED→APPROVED display, vendor cancel→REJECTED label). Penalties are refreshed from server rules before read. " +
+      "Set `RENTAL_EXTENSION_VENDOR_APPROVAL=true` to require vendor approve before extension payment.",
+  })
+  @ApiResponse({ status: 200, description: "Aggregated rental lines + meta" })
   async getCustomerActiveRentals(@Request() req) {
     return this.ordersService.getCustomerActiveRentals(req.user.id);
   }
@@ -303,7 +309,8 @@ export class OrdersController {
   @ApiOperation({
     summary: "Cancel order",
     description:
-      "Allowed only while PENDING or CONFIRMED with unpaid payment (before slots or payment). Releases inventory only if vendor has already approved (stock reserved).",
+      "Cancels while PENDING, CONFIRMED+unpaid, or within ORDER_CUSTOMER_CANCEL_WINDOW_HOURS (default 8) from order creation when still unpaid and before OUT_FOR_DELIVERY. " +
+      "Response includes cancellation_policy.window_hours.",
   })
   @ApiParam({ name: "order_id", description: "Order ID" })
   @ApiResponse({
@@ -636,6 +643,43 @@ export class OrdersController {
     @Body() assignDto: any
   ) {
     return this.ordersService.assignGardener(req.user.id, orderId, assignDto);
+  }
+
+  @Post("vendor/orders/:order_id/rental-extensions/:extension_id/approve")
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.VENDOR)
+  @ApiBearerAuth()
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: "Approve pending rental extension (when RENTAL_EXTENSION_VENDOR_APPROVAL=true)",
+    description:
+      "Applies new dates, creates extension payment, reschedules maintenance. Only extensions in PENDING_VENDOR for this nursery.",
+  })
+  @ApiParam({ name: "order_id" })
+  @ApiParam({ name: "extension_id" })
+  async approveRentalExtension(
+    @Request() req,
+    @Param("order_id") orderId: string,
+    @Param("extension_id") extensionId: string
+  ) {
+    return this.ordersService.approveVendorRentalExtension(req.user.id, orderId, extensionId);
+  }
+
+  @Post("vendor/orders/:order_id/rental-extensions/:extension_id/reject")
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.VENDOR)
+  @ApiBearerAuth()
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: "Reject pending rental extension request" })
+  @ApiParam({ name: "order_id" })
+  @ApiParam({ name: "extension_id" })
+  async rejectRentalExtension(
+    @Request() req,
+    @Param("order_id") orderId: string,
+    @Param("extension_id") extensionId: string,
+    @Body() body: { reason?: string }
+  ) {
+    return this.ordersService.rejectVendorRentalExtension(req.user.id, orderId, extensionId, body ?? {});
   }
 
   @Get("vendor/rentals/active")

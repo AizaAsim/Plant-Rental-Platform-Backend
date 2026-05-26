@@ -97,6 +97,24 @@ export class DomainNotificationsService {
     }
   }
 
+  async notifyExtensionRejectedByVendor(params: {
+    customerUserId: string;
+    orderId: string;
+    orderNumber: string;
+    extensionId: string;
+    reason?: string | null;
+  }) {
+    const r = params.reason?.trim();
+    await this.inApp(
+      params.customerUserId,
+      "Rental extension declined",
+      `The nursery did not approve your extension request for order ${params.orderNumber}.${r ? ` Reason: ${r}` : ""}`,
+      NotificationType.RENTAL,
+      "RENTAL_EXTENSION",
+      params.extensionId
+    );
+  }
+
   async notifyRentalExtension(params: {
     orderId: string;
     orderNumber: string;

@@ -12,12 +12,14 @@ import {
   OrderType,
   PaymentStatus,
   PaymentType,
+  RentalExtensionVendorApproval,
   RentalStatus,
   TaskPriority,
   TaskStatus,
   TaskType,
   TransactionStatus,
   NotificationType,
+  UserRole,
 } from "@prisma/client";
 import { PrismaService } from "src/prisma/prisma.service";
 import { Decimal } from "@prisma/client/runtime/library";
@@ -33,6 +35,7 @@ import {
   tryFulfillmentLineCondition,
   FULFILLMENT_LINE_CONDITIONS,
 } from "./fulfillment-line.constants";
+import { PenaltyService } from "./penalty.service";
 
 const VENDOR_REJECT_REASON_MIN_LEN = 3;
 const VENDOR_REJECT_REASON_MAX_LEN = 2000;
@@ -44,7 +47,8 @@ export class OrdersService {
     private prisma: PrismaService,
     private cartService: CartService,
     private readonly rentalExtension: RentalExtensionService,
-    private readonly domainNotifications: DomainNotificationsService
+    private readonly domainNotifications: DomainNotificationsService,
+    private readonly penaltyService: PenaltyService
   ) {}
 
   /** reason or rejection_reason; trimmed non-empty bounded length */
@@ -899,13 +903,21 @@ export class OrdersService {
     };
   }
 
-  // POST /api/v1/orders/{order_id}/cancel
-  async cancelOrder(userId: string, orderId: string, cancelDto: any) {
-    const { reason } = cancelDto;
+  private customerCancelWindowMs(): number {
+    const h = Number(process.env.ORDER_CUSTOMER_CANCEL_WINDOW_HOURS ?? 8);
+    return (Number.isFinite(h) && h > 0 ? h : 8) * 3600000;
+  }
+
+  /** POST /api/v1/orders/{order_id}/cancel */
+  async cancelOrder(userId: string, orderIdOrNum: string, cancelDto: any) {
+    const { reason } = cancelDto ?? {};
+
+    const oid = await resolveOrderId(this.prisma, orderIdOrNum);
+    if (!oid) throw new NotFoundException("Order not found");
 
     const order = await this.prisma.order.findFirst({
       where: {
-        id: orderId,
+        id: oid,
         userId,
       },
       include: {
@@ -921,12 +933,40 @@ export class OrdersService {
       throw new NotFoundException("Order not found");
     }
 
+    const unpaid = order.paymentStatus !== PaymentStatus.PAID;
+    const terminal = new Set<OrderStatus>([
+      OrderStatus.DELIVERED,
+      OrderStatus.COMPLETED,
+      OrderStatus.CANCELLED,
+      OrderStatus.EXPIRED,
+      OrderStatus.RETURNED,
+    ]);
+    if (terminal.has(order.status)) {
+      throw new BadRequestException(
+        `Orders in status ${order.status} cannot be cancelled by the customer`
+      );
+    }
+
     const canCancelPending = order.status === OrderStatus.PENDING;
     const canCancelApprovedUnpaid =
       order.status === OrderStatus.CONFIRMED && order.paymentStatus === PaymentStatus.PENDING;
-    if (!canCancelPending && !canCancelApprovedUnpaid) {
+
+    const ageMs = Date.now() - order.createdAt.getTime();
+    const withinWindow = ageMs <= this.customerCancelWindowMs();
+    const windowEligibleStatuses = new Set<OrderStatus>([
+      OrderStatus.CONFIRMED,
+      OrderStatus.SLOT_PROPOSED,
+      OrderStatus.SLOT_CONFIRMED,
+      OrderStatus.AWAITING_PAYMENT,
+      OrderStatus.PROCESSING,
+    ]);
+    const canCancelWithinWindow =
+      unpaid && withinWindow && windowEligibleStatuses.has(order.status);
+
+    if (!canCancelPending && !canCancelApprovedUnpaid && !canCancelWithinWindow) {
       throw new BadRequestException(
-        "Order can only be cancelled while PENDING or CONFIRMED without payment (before delivery slots or payment). Cannot cancel after slots are proposed or payment has started."
+        "Order can only be cancelled while PENDING, CONFIRMED without payment, or within the configured cancellation window from order creation (unpaid, before out-for-delivery). " +
+          "After slots are proposed, cancellation still applies if you are within the time window — see meta.cancellation_window_hours on GET .../customer/active-rentals."
       );
     }
 
@@ -941,7 +981,7 @@ export class OrdersService {
       }
 
       return tx.order.update({
-        where: { id: orderId },
+        where: { id: oid },
         data: {
           status: OrderStatus.CANCELLED,
           cancelledBy: userId,
@@ -967,10 +1007,36 @@ export class OrdersService {
       });
     }
 
-    return updated;
+    return Object.assign(updated, {
+      cancellation_policy: {
+        window_hours: Number(process.env.ORDER_CUSTOMER_CANCEL_WINDOW_HOURS ?? 8) || 8,
+        applied_via_time_window: canCancelWithinWindow,
+      },
+    });
   }
 
-  // POST /api/v1/orders/{order_id}/items/{item_id}/extend-rental
+  async approveVendorRentalExtension(
+    vendorUserId: string,
+    orderId: string,
+    extensionId: string
+  ) {
+    return this.rentalExtension.approveExtensionByVendor(vendorUserId, orderId, extensionId);
+  }
+
+  async rejectVendorRentalExtension(
+    vendorUserId: string,
+    orderId: string,
+    extensionId: string,
+    body: { reason?: string }
+  ) {
+    return this.rentalExtension.rejectExtensionByVendor(
+      vendorUserId,
+      orderId,
+      extensionId,
+      body?.reason
+    );
+  }
+
   async extendRental(userId: string, orderId: string, itemId: string, extendDto: any) {
     return this.rentalExtension.extendForUser(userId, orderId, itemId, extendDto ?? {});
   }
@@ -1677,35 +1743,183 @@ export class OrdersService {
     };
   }
 
-  /** GET /api/v1/orders/customer/active-rentals */
+  /** GET /api/v1/orders/customer/active-rentals — aggregated buckets for mobile RentalListScreen */
   async getCustomerActiveRentals(userId: string) {
-    const items = await this.prisma.orderItem.findMany({
+    const windowHours = Number(process.env.ORDER_CUSTOMER_CANCEL_WINDOW_HOURS ?? 8) || 8;
+    const extensionVendorApproval =
+      String(process.env.RENTAL_EXTENSION_VENDOR_APPROVAL ?? "").toLowerCase() === "true" ||
+      process.env.RENTAL_EXTENSION_VENDOR_APPROVAL === "1";
+
+    const lineInclude = {
+      plant: {
+        include: {
+          images: { where: { isPrimary: true }, take: 1 },
+          nursery: { select: { id: true, name: true, slug: true } },
+        },
+      },
+      rentalExtensions: {
+        orderBy: { createdAt: "desc" as const },
+        take: 8,
+      },
+      order: {
+        select: {
+          id: true,
+          orderNumber: true,
+          status: true,
+          paymentStatus: true,
+          deliveredAt: true,
+          createdAt: true,
+          cancelledBy: true,
+          cancellationReason: true,
+          nurseryId: true,
+        },
+      },
+    };
+
+    const lines = await this.prisma.orderItem.findMany({
       where: {
         order: { userId },
         orderType: OrderType.RENT,
-        rentalStatus: { in: [RentalStatus.ACTIVE, RentalStatus.EXTENDED] },
-      },
-      include: {
-        plant: {
-          include: {
-            images: { where: { isPrimary: true }, take: 1 },
-            nursery: { select: { id: true, name: true, slug: true } },
+        OR: [
+          { rentalStatus: { in: [RentalStatus.ACTIVE, RentalStatus.EXTENDED, RentalStatus.OVERDUE] } },
+          {
+            rentalStatus: RentalStatus.RETURNED,
+            order: { status: { not: OrderStatus.COMPLETED } },
           },
-        },
-        order: {
-          select: {
-            id: true,
-            orderNumber: true,
-            status: true,
-            paymentStatus: true,
-            deliveredAt: true,
-            createdAt: true,
-          },
-        },
+        ],
       },
+      include: lineInclude,
       orderBy: { rentEndDate: "asc" },
     });
-    return { items };
+
+    const pendingVendorExtensions = await this.prisma.rentalExtension.findMany({
+      where: {
+        vendorApprovalStatus: RentalExtensionVendorApproval.PENDING_VENDOR,
+        orderItem: { order: { userId } },
+      },
+      include: {
+        orderItem: {
+          include: {
+            plant: {
+              include: {
+                images: { where: { isPrimary: true }, take: 1 },
+              },
+            },
+            order: { select: { id: true, orderNumber: true, status: true } },
+          },
+        },
+      },
+      orderBy: { createdAt: "desc" },
+      take: 50,
+    });
+
+    const orderIds = [...new Set(lines.map((l) => l.orderId))];
+    for (const oid of orderIds) {
+      await this.penaltyService.syncPenaltyForOrder(oid, false).catch(() => undefined);
+    }
+
+    const penalties = await this.prisma.orderPenalty.findMany({
+      where: { orderId: { in: orderIds } },
+    });
+    const penByOrder = new Map(penalties.map((p) => [p.orderId, p]));
+
+    const cancelledByIds = [
+      ...new Set(
+        lines
+          .filter((l) => l.order.status === OrderStatus.CANCELLED && l.order.cancelledBy)
+          .map((l) => l.order.cancelledBy as string)
+      ),
+    ];
+    const cancellers =
+      cancelledByIds.length > 0
+        ? await this.prisma.user.findMany({
+            where: { id: { in: cancelledByIds } },
+            select: { id: true, role: true },
+          })
+        : [];
+    const roleByUser = new Map(cancellers.map((u) => [u.id, u.role]));
+
+    const enrich = (line: (typeof lines)[0]) => {
+      const op = penByOrder.get(line.orderId);
+      const penalty = op
+        ? {
+            overdue_days: op.overdueDays,
+            running_total: Number(op.runningTotal),
+            pay_status: op.payStatus,
+          }
+        : null;
+
+      let bucket: "ONGOING" | "OVERDUE" | "PICKUP_PENDING" = "ONGOING";
+      if (line.rentalStatus === RentalStatus.RETURNED && line.order.status !== OrderStatus.COMPLETED) {
+        bucket = "PICKUP_PENDING";
+      } else if (line.rentalStatus === RentalStatus.OVERDUE) {
+        bucket = "OVERDUE";
+      }
+
+      const unpaidExt = line.rentalExtensions?.find(
+        (e) =>
+          e.paymentStatus === PaymentStatus.PENDING &&
+          e.vendorApprovalStatus !== RentalExtensionVendorApproval.PENDING_VENDOR &&
+          e.vendorApprovalStatus !== RentalExtensionVendorApproval.REJECTED
+      );
+
+      const extensionAwaitingVendor =
+        line.rentalExtensions?.some(
+          (e) => e.vendorApprovalStatus === RentalExtensionVendorApproval.PENDING_VENDOR
+        ) ?? false;
+
+      const cancellerRole = line.order.cancelledBy
+        ? roleByUser.get(line.order.cancelledBy as string)
+        : undefined;
+
+      return {
+        ...line,
+        customer_rental_bucket: bucket,
+        ui_hints: {
+          order_status_display:
+            line.order.status === OrderStatus.CONFIRMED ? "APPROVED" : line.order.status,
+          vendor_rejection_ui_label:
+            line.order.status === OrderStatus.CANCELLED && cancellerRole === UserRole.VENDOR
+              ? "REJECTED"
+              : undefined,
+          pickup_pending_note:
+            bucket === "PICKUP_PENDING"
+              ? "Doc label PICKUP_PENDING: line is RETURNED while order is not COMPLETED (pickup / restock in progress)."
+              : undefined,
+        },
+        penalty,
+        flags: {
+          unpaid_extension_payment: !!unpaidExt,
+          extension_awaiting_vendor: extensionAwaitingVendor,
+          pending_extension_id: unpaidExt?.id ?? null,
+        },
+      };
+    };
+
+    const enriched = lines.map(enrich);
+    const ongoing = enriched.filter((x) => x.customer_rental_bucket === "ONGOING");
+    const overdue = enriched.filter((x) => x.customer_rental_bucket === "OVERDUE");
+    const pickup_pending = enriched.filter((x) => x.customer_rental_bucket === "PICKUP_PENDING");
+
+    return {
+      meta: {
+        cancellation_window_hours: windowHours,
+        extension_vendor_approval_enabled: extensionVendorApproval,
+        doc_alignment: {
+          APPROVED_vs_CONFIRMED:
+            "Use ui_hints.order_status_display: CONFIRMED is shown as APPROVED in product docs.",
+          REJECTED_vs_CANCELLED:
+            "Vendor rejection uses OrderStatus.CANCELLED + cancelled_by vendor; ui_hints.vendor_rejection_ui_label is REJECTED.",
+          PICKUP_PENDING:
+            "Not a DB enum; use customer_rental_bucket PICKUP_PENDING (RETURNED rental line, order.status !== COMPLETED).",
+        },
+      },
+      ongoing,
+      overdue,
+      pickup_pending,
+      pending_vendor_extensions: pendingVendorExtensions,
+      items: enriched,
+    };
   }
 
   private async requireVendorOrder(vendorId: string, orderIdOrNumber: string) {

@@ -323,6 +323,16 @@
       <ol class="steps">
         <li>Vendor: <code>PUT /api/v1/orders/vendor/orders/:order_id/approve</code> with <code>plant_selections[]</code> (every line must be covered).</li>
         <li>Backend sets order to <code>CONFIRMED</code> and stores selections. Customer should be prompted to <strong>pay</strong> if <code>paymentStatus</code> is not <code>PAID</code>.</li>
+        <li><strong>Doc vs DB naming:</strong> product copy may say <code>APPROVED</code> — it maps to <code>CONFIRMED</code>. Vendor reject uses <code>CANCELLED</code> + <code>cancelled_by</code> vendor user; UI may label <code>REJECTED</code>.</li>
+      </ol>
+    </div>
+
+    <div class="phase">
+      <div class="phase-num">B2 — CUSTOMER CANCEL &amp; RENTAL HUB</div>
+      <ol class="steps">
+        <li><strong>Cancel:</strong> <code>POST /api/v1/orders/:order_id/cancel</code> — <code>PENDING</code>, <code>CONFIRMED</code> unpaid, <strong>or</strong> within <code>ORDER_CUSTOMER_CANCEL_WINDOW_HOURS</code> (default 8) from <code>order.created_at</code> while still unpaid and before <code>OUT_FOR_DELIVERY</code> (includes <code>SLOT_PROPOSED</code> inside the window).</li>
+        <li><strong>Rental list (aggregated):</strong> <code>GET /api/v1/orders/customer/active-rentals</code> returns <code>ongoing</code>, <code>overdue</code>, <code>pickup_pending</code> (doc “PICKUP_PENDING”: line <code>RETURNED</code>, order not <code>COMPLETED</code>), <code>pending_vendor_extensions</code>, plus <code>items[]</code> with <code>customer_rental_bucket</code>, <code>penalty</code>, <code>flags</code>, <code>ui_hints</code>.</li>
+        <li><strong>Extension vendor gate (optional):</strong> set <code>RENTAL_EXTENSION_VENDOR_APPROVAL=true</code> — then vendor <code>POST .../rental-extensions/:extension_id/approve|reject</code> before customer pays.</li>
       </ol>
     </div>
 
@@ -354,7 +364,7 @@
         <li>Vendor: <code>POST .../vendor/orders/:order_id/initiate-return</code> (pickup slots in body → <code>workflowMeta</code>).</li>
         <li>Customer: <code>POST /api/v1/orders/:order_id/customer-return-response</code>.</li>
         <li>Vendor: <code>POST .../complete-return</code> with per-line condition / restock flags.</li>
-        <li>Customer cancel pre-payment: <code>POST /api/v1/orders/:order_id/cancel</code> (allowed only in early states per server rules).</li>
+        <li>Customer cancel (pre-delivery / window): <code>POST /api/v1/orders/:order_id/cancel</code> — see <strong>§B2</strong>.</li>
       </ol>
     </div>
 
@@ -452,7 +462,7 @@ GET      /api/v1/ai/recommender/schema       → app-defined preference fields</
     <ul style="color: var(--muted); margin: 0 0 20px; padding-left: 22px;">
       <li>Exact <strong>expiry timings</strong> for slots, payment windows, and unpaid orders: <code>OrderStatus</code> includes <code>EXPIRED</code> where implemented — confirm TTL env vars and <code>cron</code> / internal jobs in your deployment.</li>
       <li>Full <strong>slot state machine</strong> (HELD, RELEASED, etc.) in SQL — many flows use <code>workflowMeta</code> JSON instead.</li>
-      <li>Identical labels to a marketing PDF: map UI copy to the <strong>fields above</strong> (status + paymentStatus + workflowMeta).</li>
+      <li><code>POST /api/v1/cart/packages</code> and package-first checkout: <strong>optional</strong>; core checkout still supports individual plant lines.</li>
     </ul>
 
     <footer>
