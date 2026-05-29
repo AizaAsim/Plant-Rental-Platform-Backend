@@ -12,7 +12,6 @@ import { RolesGuard } from "../auth/guard/roles.guard";
 import { RentalExtensionModule } from "../rentals/rental-extension.module";
 import { NotificationsModule } from "../notifications/notifications.module";
 import { PenaltyModule } from "./penalty.module";
-import { InventoryModule } from "../inventory/inventory.module";
 
 @Module({
   imports: [
@@ -22,7 +21,6 @@ import { InventoryModule } from "../inventory/inventory.module";
     RentalExtensionModule,
     NotificationsModule,
     PenaltyModule,
-    InventoryModule,
   ],
   controllers: [OrdersController, VendorRentalsController],
   providers: [OrdersService, OrderContractFlowService, OrderComplaintsService, RolesGuard],

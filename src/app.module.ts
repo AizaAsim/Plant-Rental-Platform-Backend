@@ -34,7 +34,6 @@ import { VendorPackagesModule } from "./modules/app/vendor-packages/vendor-packa
 import { FreelanceJobsModule } from "./modules/app/freelance-jobs/freelance-jobs.module";
 import { InternalJobsModule } from "./modules/app/internal-jobs/internal-jobs.module";
 import { VendorOnboardingModule } from "./modules/app/vendor-onboarding/vendor-onboarding.module";
-import { InventoryModule } from "./modules/app/inventory/inventory.module";
 @Module({
   imports: [
     ContractCommonModule,
@@ -63,7 +62,6 @@ import { InventoryModule } from "./modules/app/inventory/inventory.module";
     VendorOnboardingModule,
     FreelanceJobsModule,
     InternalJobsModule,
-    InventoryModule,
     AiModule,
     CronModule,
     QueueModule,

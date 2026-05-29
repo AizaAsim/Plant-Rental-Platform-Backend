@@ -5,10 +5,9 @@ import { InternalJobsService } from "./internal-jobs.service";
 import { RolesGuard } from "../auth/guard/roles.guard";
 import { PenaltyModule } from "../orders/penalty.module";
 import { NotificationsModule } from "../notifications/notifications.module";
-import { InventoryModule } from "../inventory/inventory.module";
 
 @Module({
-  imports: [PrismaModule, PenaltyModule, NotificationsModule, InventoryModule],
+  imports: [PrismaModule, PenaltyModule, NotificationsModule],
   controllers: [InternalJobsController],
   providers: [InternalJobsService, RolesGuard],
   exports: [InternalJobsService],

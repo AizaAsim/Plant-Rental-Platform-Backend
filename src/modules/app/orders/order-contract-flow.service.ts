@@ -10,7 +10,6 @@ import {
   tryFulfillmentLineCondition,
 } from "./fulfillment-line.constants";
 import { PenaltyService } from "./penalty.service";
-import { PlantInventoryService } from "../inventory/plant-inventory.service";
 
 type Slot = { id: string; date: string; time_from: string; time_to: string };
 
@@ -25,8 +24,7 @@ export type GardenerProposalStored = {
 export class OrderContractFlowService {
   constructor(
     private readonly prisma: PrismaService,
-    private readonly penaltyService: PenaltyService,
-    private readonly plantInventory: PlantInventoryService
+    private readonly penaltyService: PenaltyService
   ) {}
 
   private getMeta(raw: unknown): Record<string, unknown> {
@@ -480,10 +478,7 @@ export class OrderContractFlowService {
         }
         if (conditionRaw !== "GOOD") damagedLines += 1;
 
-        const restock =
-          order.inventoryDeliveredAt != null
-            ? conditionRaw === "GOOD" || Boolean(it.restock)
-            : Boolean(it.restock);
+        const restock = Boolean(it.restock);
         if (restock) restockedLines += 1;
 
         const proofAt = parseLineProofAt(it.proof_at) ?? defaultProofAt;
@@ -503,16 +498,10 @@ export class OrderContractFlowService {
         });
 
         if (restock) {
-          if (order.inventoryDeliveredAt) {
-            await this.plantInventory.returnDeliveredToAvailable(tx, [
-              { plantId: oi.plantId, quantity: oi.quantity, orderType: OrderType.RENT },
-            ]);
-          } else {
-            await tx.plant.update({
-              where: { id: oi.plantId },
-              data: { stockQuantity: { increment: oi.quantity } },
-            });
-          }
+          await tx.plant.update({
+            where: { id: oi.plantId },
+            data: { stockQuantity: { increment: oi.quantity } },
+          });
         }
       }
 

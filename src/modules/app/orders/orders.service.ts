@@ -36,7 +36,6 @@ import {
   FULFILLMENT_LINE_CONDITIONS,
 } from "./fulfillment-line.constants";
 import { PenaltyService } from "./penalty.service";
-import { PlantInventoryService } from "../inventory/plant-inventory.service";
 
 const VENDOR_REJECT_REASON_MIN_LEN = 3;
 const VENDOR_REJECT_REASON_MAX_LEN = 2000;
@@ -49,32 +48,8 @@ export class OrdersService {
     private cartService: CartService,
     private readonly rentalExtension: RentalExtensionService,
     private readonly domainNotifications: DomainNotificationsService,
-    private readonly penaltyService: PenaltyService,
-    private readonly plantInventory: PlantInventoryService
+    private readonly penaltyService: PenaltyService
   ) {}
-
-  /** Release inventory on cancel/reject/expire (new reserved flow + legacy approve decrement). */
-  private async releaseOrderInventory(
-    tx: Prisma.TransactionClient,
-    order: {
-      inventoryReservedAt: Date | null;
-      inventoryDeliveredAt: Date | null;
-      vendorApprovalSelections: Prisma.JsonValue | null;
-      items: { plantId: string; quantity: number; orderType: OrderType }[];
-    }
-  ) {
-    if (order.inventoryDeliveredAt) {
-      return;
-    }
-    const lines = this.plantInventory.linesFromOrderItems(order.items);
-    if (order.inventoryReservedAt) {
-      await this.plantInventory.releaseReserved(tx, lines);
-      return;
-    }
-    if (order.vendorApprovalSelections != null) {
-      await this.plantInventory.legacyRestoreAvailable(tx, lines);
-    }
-  }
 
   /** reason or rejection_reason; trimmed non-empty bounded length */
   private parseVendorRejectReason(body: Record<string, unknown> | undefined | null): string {
@@ -92,12 +67,9 @@ export class OrdersService {
     return s;
   }
 
-  /** Stock is reserved at checkout when `inventoryReservedAt` is set; legacy orders used approve-time decrement. */
-  private inventoryReservedAtApproval(order: {
-    vendorApprovalSelections: Prisma.JsonValue | null;
-    inventoryReservedAt?: Date | null;
-  }): boolean {
-    return order.vendorApprovalSelections != null && !order.inventoryReservedAt;
+  /** Stock is decremented at vendor approve (v4 flow), not at checkout. `vendor_approval_selections` is set atomically with that reservation. */
+  private inventoryReservedAtApproval(order: { vendorApprovalSelections: Prisma.JsonValue | null }): boolean {
+    return order.vendorApprovalSelections != null;
   }
 
   /** Assign-gardener / processing path: nursery work after money captured */
@@ -452,21 +424,6 @@ export class OrdersService {
                 },
               },
             },
-            vendorPackage: {
-              include: {
-                nursery: true,
-                plants: {
-                  include: {
-                    plant: {
-                      include: {
-                        nursery: true,
-                        images: { where: { isPrimary: true }, take: 1 },
-                      },
-                    },
-                  },
-                },
-              },
-            },
           },
         },
       },
@@ -539,16 +496,6 @@ export class OrdersService {
             item: pkgItem,
           });
         }
-      } else if (pkgItem.vendorPackage) {
-        const vp = pkgItem.vendorPackage;
-        const nurseryId = vp.nurseryId;
-        if (!nurseryGroups.has(nurseryId)) {
-          nurseryGroups.set(nurseryId, []);
-        }
-        nurseryGroups.get(nurseryId)!.push({
-          type: "vendor_package",
-          item: pkgItem,
-        });
       }
     }
 
@@ -573,13 +520,9 @@ export class OrdersService {
     }
 
     for (const pkgItem of cart.packageItems) {
-      const pkg = pkgItem.package || pkgItem.customPackage || pkgItem.vendorPackage;
+      const pkg = pkgItem.package || pkgItem.customPackage;
       if (pkg) {
-        const price =
-          pkgItem.vendorPackage != null
-            ? pkgItem.vendorPackage.basePrice
-            : (pkg as { price: Decimal }).price;
-        totalCartSubtotal = totalCartSubtotal.plus(price.times(pkgItem.quantity));
+        totalCartSubtotal = totalCartSubtotal.plus(pkg.price.times(pkgItem.quantity));
       }
     }
 
@@ -648,7 +591,7 @@ export class OrdersService {
             totalPrice: itemTotal,
             rentStartDate: item.rentStartDate ? new Date(item.rentStartDate) : null,
             rentEndDate: item.rentEndDate ? new Date(item.rentEndDate) : null,
-            rentalStatus: null,
+            rentalStatus: item.orderType === OrderType.RENT ? RentalStatus.ACTIVE : null,
           });
         } else if (type === "package" || type === "custom_package") {
           const pkg = type === "package" ? item.package : item.customPackage;
@@ -668,36 +611,6 @@ export class OrdersService {
               unitPrice,
               depositPerUnit: plant.depositAmount || new Decimal(0),
               totalPrice: itemTotal,
-            });
-          }
-        } else if (type === "vendor_package") {
-          const vp = item.vendorPackage;
-          const packagePrice = vp.basePrice.times(item.quantity);
-          subtotal = subtotal.plus(packagePrice);
-          if (vp.depositAmount) {
-            totalDeposit = totalDeposit.plus(vp.depositAmount.times(item.quantity));
-          }
-
-          const durationDays = vp.rentalDurationDays;
-          const rentEnd = new Date();
-          rentEnd.setUTCDate(rentEnd.getUTCDate() + durationDays);
-
-          for (const pkgPlant of vp.plants) {
-            const plant = pkgPlant.plant;
-            const qty = pkgPlant.quantity * item.quantity;
-            const unitPrice = plant.rentPriceMonthly ?? plant.rentPriceWeekly ?? new Decimal(0);
-            const itemTotal = unitPrice.times(qty);
-
-            orderItems.push({
-              plantId: plant.id,
-              quantity: qty,
-              orderType: OrderType.RENT,
-              unitPrice,
-              depositPerUnit: plant.depositAmount || new Decimal(0),
-              totalPrice: itemTotal,
-              rentStartDate: new Date(),
-              rentEndDate: rentEnd,
-              rentalStatus: null,
             });
           }
         }
@@ -732,63 +645,53 @@ export class OrdersService {
       const hasBuy = orderItems.some((i) => i.orderType === OrderType.BUY);
       const orderType = hasRent && hasBuy ? OrderType.MIXED : hasRent ? OrderType.RENT : OrderType.BUY;
 
-      // Create order + reserve inventory (AVAILABLE → RESERVED)
-      const reserveLines = orderItems.map((oi) => ({
-        plantId: oi.plantId,
-        quantity: oi.quantity,
-        orderType: oi.orderType,
-      }));
-
-      const order = await this.prisma.$transaction(async (tx) => {
-        await this.plantInventory.assertCanReserve(tx, reserveLines);
-        await this.plantInventory.reserve(tx, reserveLines);
-
-        return tx.order.create({
-          data: {
-            orderNumber: this.generateOrderNumber(),
-            userId,
-            nurseryId,
-            deliveryAddressId: delivery_address_id,
-            orderType,
-            status: OrderStatus.PENDING,
-            subtotal,
-            deliveryFee,
-            taxAmount,
-            discountAmount: orderDiscount,
-            depositAmount: totalDeposit,
-            totalAmount,
-            paymentMethod: payment_method,
-            paymentStatus: PaymentStatus.PENDING,
-            notes,
-            inventoryReservedAt: new Date(),
-            items: {
-              create: orderItems,
-            },
+      // Create order
+      const order = await this.prisma.order.create({
+        data: {
+          orderNumber: this.generateOrderNumber(),
+          userId,
+          nurseryId,
+          deliveryAddressId: delivery_address_id,
+          orderType,
+          status: OrderStatus.PENDING,
+          subtotal,
+          deliveryFee,
+          taxAmount,
+          discountAmount: orderDiscount,
+          depositAmount: totalDeposit,
+          totalAmount,
+          paymentMethod: payment_method,
+          paymentStatus: PaymentStatus.PENDING,
+          notes,
+          items: {
+            create: orderItems,
           },
-          include: {
-            items: {
-              include: {
-                plant: {
-                  include: {
-                    images: {
-                      where: { isPrimary: true },
-                      take: 1,
-                    },
+        },
+        include: {
+          items: {
+            include: {
+              plant: {
+                include: {
+                  images: {
+                    where: { isPrimary: true },
+                    take: 1,
                   },
                 },
               },
             },
-            nursery: {
-              select: {
-                id: true,
-                name: true,
-                city: true,
-              },
-            },
-            deliveryAddress: true,
           },
-        });
+          nursery: {
+            select: {
+              id: true,
+              name: true,
+              city: true,
+            },
+          },
+          deliveryAddress: true,
+        },
       });
+
+      // Inventory is reserved when the vendor approves (`vendorApproveOrder`), not at checkout.
 
       // Order payment rows are created only via POST /payments/initiate after the customer has
       // confirmed a delivery slot (SLOT_CONFIRMED → AWAITING_PAYMENT).
@@ -1068,7 +971,14 @@ export class OrdersService {
     }
 
     const updated = await this.prisma.$transaction(async (tx) => {
-      await this.releaseOrderInventory(tx, order);
+      if (this.inventoryReservedAtApproval(order)) {
+        for (const item of order.items) {
+          await tx.plant.update({
+            where: { id: item.plantId },
+            data: { stockQuantity: { increment: item.quantity } },
+          });
+        }
+      }
 
       return tx.order.update({
         where: { id: oid },
@@ -1480,7 +1390,14 @@ export class OrdersService {
     }
 
     const updated = await this.prisma.$transaction(async (tx) => {
-      await this.releaseOrderInventory(tx, order);
+      if (this.inventoryReservedAtApproval(order)) {
+        for (const item of order.items) {
+          await tx.plant.update({
+            where: { id: item.plantId },
+            data: { stockQuantity: { increment: item.quantity } },
+          });
+        }
+      }
 
       return tx.order.update({
         where: { id: order.id },
@@ -2074,22 +1991,22 @@ export class OrdersService {
       for (const line of items) {
         const plant = await tx.plant.findUnique({
           where: { id: line.plantId },
-          select: { reservedQuantity: true, stockQuantity: true, name: true },
+          select: { stockQuantity: true },
         });
         if (!plant) {
           throw new BadRequestException(`Plant not found for order line ${line.id}`);
         }
-        if (order.inventoryReservedAt) {
-          if (plant.reservedQuantity < line.quantity) {
-            throw new BadRequestException(
-              `Insufficient reserved stock for ${plant.name} (need ${line.quantity}, reserved ${plant.reservedQuantity})`
-            );
-          }
-        } else if (plant.stockQuantity < line.quantity) {
+        if (plant.stockQuantity < line.quantity) {
           throw new BadRequestException(
-            `Insufficient stock for ${plant.name} (legacy order — need ${line.quantity}, available ${plant.stockQuantity})`
+            `Insufficient stock for plant ${line.plantId} (need ${line.quantity}, have ${plant.stockQuantity})`
           );
         }
+      }
+      for (const line of items) {
+        await tx.plant.update({
+          where: { id: line.plantId },
+          data: { stockQuantity: { decrement: line.quantity } },
+        });
       }
 
       return tx.order.update({
@@ -2261,22 +2178,8 @@ export class OrdersService {
         data: {
           status: OrderStatus.DELIVERED,
           deliveredAt: now,
-          ...(order.inventoryReservedAt && !order.inventoryDeliveredAt
-            ? { inventoryDeliveredAt: now }
-            : {}),
         },
       });
-
-      if (order.inventoryReservedAt && !order.inventoryDeliveredAt) {
-        const rentLines = this.plantInventory.rentLines(order.items);
-        const buyLines = this.plantInventory.buyLines(order.items);
-        if (rentLines.length) {
-          await this.plantInventory.deliverReserved(tx, rentLines);
-        }
-        if (buyLines.length) {
-          await this.plantInventory.finalizeBuyFromReserved(tx, buyLines);
-        }
-      }
     });
 
     const full = await this.prisma.order.findUnique({
