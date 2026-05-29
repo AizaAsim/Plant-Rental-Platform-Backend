@@ -510,6 +510,8 @@ model Plant {
   isAvailableForRent  Boolean             @default(true) @map("is_available_for_rent")
   isAvailableForSale  Boolean             @default(true) @map("is_available_for_sale")
   stockQuantity       Int                 @default(0) @map("stock_quantity")
+  reservedQuantity    Int                 @default(0) @map("reserved_quantity")
+  deliveredQuantity   Int                 @default(0) @map("delivered_quantity")
   minRentDays         Int                 @default(7) @map("min_rent_days")
   maxRentDays         Int                 @default(365) @map("max_rent_days")
   isFeatured          Boolean             @default(false) @map("is_featured")
@@ -532,6 +534,7 @@ model Plant {
   interactions   UserPlantInteraction[]
   packageItems   PlantPackageItem[]
   customPackageItems CustomPlantPackageItem[]
+  vendorPackagePlants VendorPackagePlant[]
 
   @@unique([nurseryId, slug])
   @@map("plants")
@@ -716,6 +719,8 @@ model Order {
   disputes        Dispute[]
   couponUsage               CouponUsage[]
   vendorApprovalSelections  Json?         @map("vendor_approval_selections")
+  inventoryReservedAt     DateTime?     @map("inventory_reserved_at")
+  inventoryDeliveredAt    DateTime?     @map("inventory_delivered_at")
   workflowMeta              Json?         @map("workflow_meta")
   manualIntervention        ManualInterventionOrder?
   orderPenalty              OrderPenalty?
@@ -1301,6 +1306,7 @@ model CartPackageItem {
   cartId            String   @map("cart_id")
   packageId         String?  @map("package_id")
   customPackageId   String?  @map("custom_package_id")
+  vendorPackageId   String?  @map("vendor_package_id")
   quantity          Int      @default(1)
   createdAt         DateTime @default(now()) @map("created_at")
   updatedAt         DateTime @updatedAt @map("updated_at")
@@ -1308,6 +1314,7 @@ model CartPackageItem {
   cart              Cart             @relation(fields: [cartId], references: [id], onDelete: Cascade)
   package           PlantPackage?    @relation(fields: [packageId], references: [id])
   customPackage     CustomPlantPackage? @relation(fields: [customPackageId], references: [id])
+  vendorPackage     VendorPackage?   @relation(fields: [vendorPackageId], references: [id])
 
   @@map("cart_package_items")
 }
@@ -1371,9 +1378,25 @@ model VendorPackage {
   updatedAt             DateTime @updatedAt @map("updated_at")
 
   nursery Nursery @relation(fields: [nurseryId], references: [id], onDelete: Cascade)
+  plants  VendorPackagePlant[]
+  cartItems CartPackageItem[]
 
   @@index([nurseryId, isActive])
   @@map("vendor_packages")
+}
+
+model VendorPackagePlant {
+  id        String @id @default(uuid())
+  packageId String @map("package_id")
+  plantId   String @map("plant_id")
+  quantity  Int
+
+  package VendorPackage @relation(fields: [packageId], references: [id], onDelete: Cascade)
+  plant   Plant         @relation(fields: [plantId], references: [id], onDelete: Cascade)
+
+  @@unique([packageId, plantId])
+  @@index([plantId])
+  @@map("vendor_package_plants")
 }
 
 model FreelanceJob {

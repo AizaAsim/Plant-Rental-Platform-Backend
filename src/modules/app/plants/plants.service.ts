@@ -703,6 +703,9 @@ export class PlantsService {
       stats: {
         totalOrders: plant._count.orderItems,
         totalWishlists: plant._count.wishlists,
+        available_stock: plant.stockQuantity,
+        reserved_stock: plant.reservedQuantity,
+        delivered_stock: plant.deliveredQuantity,
         stockStatus:
           plant.stockQuantity === 0 ? "out_of_stock" :
           plant.stockQuantity <= 5  ? "low_stock" : "in_stock",

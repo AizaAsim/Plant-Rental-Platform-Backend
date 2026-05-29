@@ -1,0 +1,255 @@
+@import "tailwindcss";
+
+/* Kiyaari — light theme (do NOT use bare :root; it blocks dark overrides) */
+html[data-theme="light"] {
+  color-scheme: light;
+  --background: #f6fbf7;
+  --foreground: #14532d;
+  --card: #ffffff;
+  --card-border: #c7e8d0;
+  --muted: #4b6b55;
+  --primary: #2d6a4f;
+  --primary-hover: #1b4332;
+  --primary-foreground: #ffffff;
+  --accent: #d8f3dc;
+  --accent-foreground: #1b4332;
+  --sidebar: #ffffff;
+  --header: #ffffff;
+  --table-head: #ecfdf3;
+}
+
+html[data-theme="dark"],
+html.dark {
+  color-scheme: dark;
+  --background: #0f1a14;
+  --foreground: #d8f3dc;
+  --card: #15261c;
+  --card-border: #2d4a38;
+  --muted: #94b8a3;
+  --primary: #40916c;
+  --primary-hover: #52b788;
+  --primary-foreground: #ffffff;
+  --accent: #1b4332;
+  --accent-foreground: #d8f3dc;
+  --sidebar: #15261c;
+  --header: #15261c;
+  --table-head: #1b3326;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-primary: var(--primary);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-geist-sans), system-ui, sans-serif;
+}
+
+/* Ambient background */
+.kiyaari-shell-bg {
+  background-color: var(--background);
+  background-image:
+    radial-gradient(ellipse 80% 50% at 0% 0%, color-mix(in srgb, var(--primary) 12%, transparent), transparent),
+    radial-gradient(ellipse 60% 40% at 100% 10%, color-mix(in srgb, var(--primary) 8%, transparent), transparent);
+}
+
+.kiyaari-header {
+  background: color-mix(in srgb, var(--header) 85%, transparent);
+}
+
+.kiyaari-hero {
+  background: linear-gradient(
+    135deg,
+    color-mix(in srgb, var(--primary) 18%, var(--card)),
+    var(--card)
+  );
+  border-color: var(--card-border);
+}
+
+.kiyaari-tip-card {
+  border-color: color-mix(in srgb, var(--primary) 35%, var(--card-border));
+}
+
+.kiyaari-stat-card {
+  border-top: 3px solid var(--primary);
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+.kiyaari-stat-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 10px 28px color-mix(in srgb, var(--primary) 12%, transparent);
+}
+
+.kiyaari-quick-link:hover {
+  border-color: var(--primary);
+  box-shadow: 0 6px 20px color-mix(in srgb, var(--primary) 10%, transparent);
+}
+
+.kiyaari-nav-group-title {
+  color: var(--muted);
+}
+
+.kiyaari-nav-link {
+  color: var(--muted);
+}
+.kiyaari-nav-link:hover {
+  background: color-mix(in srgb, var(--accent) 60%, transparent);
+  color: var(--foreground);
+}
+.kiyaari-nav-link-active {
+  background: var(--accent) !important;
+  color: var(--primary) !important;
+  border-left: 3px solid var(--primary);
+  padding-left: calc(0.75rem - 3px);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--primary) 15%, transparent);
+}
+
+.kiyaari-trend-up {
+  color: #16a34a;
+}
+html[data-theme="dark"] .kiyaari-trend-up,
+html.dark .kiyaari-trend-up {
+  color: #86efac;
+}
+.kiyaari-trend-down {
+  color: #dc2626;
+}
+html[data-theme="dark"] .kiyaari-trend-down,
+html.dark .kiyaari-trend-down {
+  color: #fca5a5;
+}
+
+.kiyaari-panel {
+  background: var(--card);
+  border: 1px solid var(--card-border);
+  color: var(--foreground);
+}
+
+.kiyaari-input,
+.kiyaari-select,
+.kiyaari-textarea {
+  border: 1px solid var(--card-border);
+  background: var(--card);
+  color: var(--foreground);
+}
+.kiyaari-input::placeholder,
+.kiyaari-textarea::placeholder {
+  color: var(--muted);
+  opacity: 0.8;
+}
+
+.kiyaari-message {
+  background: color-mix(in srgb, var(--accent) 50%, var(--card));
+  border: 1px solid var(--card-border);
+  color: var(--foreground);
+}
+
+.kiyaari-alert-error {
+  background: color-mix(in srgb, #dc2626 12%, var(--card));
+  border: 1px solid color-mix(in srgb, #dc2626 40%, var(--card-border));
+  color: var(--foreground);
+}
+
+.kiyaari-json {
+  background: color-mix(in srgb, var(--foreground) 8%, var(--card));
+  border: 1px solid var(--card-border);
+  color: var(--foreground);
+}
+
+/* Login backdrop */
+.kiyaari-login-bg {
+  background-color: var(--background);
+  background-image:
+    radial-gradient(circle at 15% 20%, color-mix(in srgb, var(--primary) 20%, transparent) 0%, transparent 45%),
+    radial-gradient(circle at 85% 75%, color-mix(in srgb, var(--primary) 15%, transparent) 0%, transparent 40%);
+}
+
+.kiyaari-card {
+  background: var(--card);
+  border-color: var(--card-border);
+}
+.kiyaari-sidebar {
+  background: var(--sidebar);
+  border-color: var(--card-border);
+}
+.kiyaari-header {
+  background: var(--header);
+  border-color: var(--card-border);
+}
+.kiyaari-table-head {
+  background: var(--table-head);
+  color: var(--muted);
+}
+
+/* Primary actions stay green in both themes */
+.kiyaari-btn-primary {
+  background-color: var(--primary) !important;
+  color: var(--primary-foreground) !important;
+}
+.kiyaari-btn-primary:hover:not(:disabled) {
+  background-color: var(--primary-hover) !important;
+}
+
+.kiyaari-btn-secondary {
+  background-color: var(--card) !important;
+  color: var(--foreground) !important;
+  border: 1px solid var(--card-border) !important;
+}
+.kiyaari-btn-secondary:hover:not(:disabled) {
+  background-color: var(--accent) !important;
+  color: var(--accent-foreground) !important;
+}
+
+.kiyaari-page-title {
+  color: var(--foreground);
+}
+.kiyaari-page-subtitle,
+.kiyaari-text-muted {
+  color: var(--muted);
+}
+
+/* Legacy zinc utilities — readable in dark mode */
+.text-zinc-900,
+.text-zinc-800,
+.text-zinc-700 {
+  color: var(--foreground) !important;
+}
+.text-zinc-600,
+.text-zinc-500,
+.text-zinc-400 {
+  color: var(--muted) !important;
+}
+
+.kiyaari-dialog {
+  background: var(--card);
+  border-color: var(--card-border);
+  color: var(--foreground);
+}
+.kiyaari-dialog-muted {
+  color: var(--muted);
+}
+
+.kiyaari-badge-default {
+  background: var(--accent);
+  color: var(--accent-foreground);
+  border-color: var(--card-border);
+}
+.kiyaari-badge-success {
+  background: color-mix(in srgb, var(--primary) 25%, transparent);
+  color: var(--foreground);
+  border-color: var(--primary);
+}
+.kiyaari-badge-warning {
+  background: color-mix(in srgb, #d97706 20%, transparent);
+  color: var(--foreground);
+  border-color: #d97706;
+}
+.kiyaari-badge-danger {
+  background: color-mix(in srgb, #dc2626 20%, transparent);
+  color: var(--foreground);
+  border-color: #dc2626;
+}

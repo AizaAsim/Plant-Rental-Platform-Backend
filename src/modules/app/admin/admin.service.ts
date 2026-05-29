@@ -788,6 +788,52 @@ export class AdminService {
     return { success: true };
   }
 
+  /** Admin dashboard: list order complaints (also exposed on AdminController). */
+  async listOrderComplaints(q: { status?: string; page?: number; limit?: number }) {
+    const page = Math.max(1, Number(q.page) || 1);
+    const limit = Math.min(Number(q.limit) || 50, 100);
+    const skip = (page - 1) * limit;
+    const where = q.status ? { status: q.status as any } : {};
+
+    const [items, total] = await Promise.all([
+      this.prisma.orderComplaint.findMany({
+        where,
+        skip,
+        take: limit,
+        orderBy: { createdAt: "desc" },
+        include: {
+          order: { select: { orderNumber: true, nurseryId: true } },
+          user: { select: { id: true, fullName: true, email: true } },
+        },
+      }),
+      this.prisma.orderComplaint.count({ where }),
+    ]);
+    return { items, pagination: { page, limit, total, totalPages: Math.ceil(total / limit) } };
+  }
+
+  async searchPlants(q: { search?: string; limit?: string }) {
+    const limit = Math.min(Number(q.limit) || 20, 50);
+    const search = q.search?.trim();
+    const where: Prisma.PlantWhereInput = search
+      ? {
+          OR: [
+            { name: { contains: search, mode: "insensitive" } },
+            { id: search },
+          ],
+        }
+      : {};
+    return this.prisma.plant.findMany({
+      where,
+      take: limit,
+      orderBy: { name: "asc" },
+      select: {
+        id: true,
+        name: true,
+        nursery: { select: { name: true } },
+      },
+    });
+  }
+
   // --- Contract v3.1: manual intervention (MISS-19 / MISS-20) ---
 
   async listManualOrders(q: { status?: string; priority?: string; page?: string; limit?: string }) {

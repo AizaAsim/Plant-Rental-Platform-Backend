@@ -9,6 +9,7 @@ import {
 import { PrismaService } from "src/prisma/prisma.service";
 import { contractOk } from "src/common/contract/response";
 import { DomainNotificationsService } from "../notifications/domain-notifications.service";
+import { PlantInventoryService } from "../inventory/plant-inventory.service";
 
 export type ExpireReason = "PAYMENT_TIMEOUT" | "SLOT_SELECTION_EXPIRED" | "PAYMENT_WINDOW_EXPIRED";
 
@@ -18,7 +19,8 @@ export class InternalJobsService {
 
   constructor(
     private readonly prisma: PrismaService,
-    private readonly domainNotifications: DomainNotificationsService
+    private readonly domainNotifications: DomainNotificationsService,
+    private readonly plantInventory: PlantInventoryService
   ) {}
 
   private getMeta(raw: unknown): Record<string, unknown> {
@@ -40,8 +42,8 @@ export class InternalJobsService {
   }
 
   /**
-   * Terminal EXPIRED + release stock when inventory was reserved at vendor approval.
-   * Idempotent under concurrent runs.
+   * Terminal EXPIRED + release stock when inventory was reserved at checkout
+   * (or legacy approve-time decrement). Idempotent under concurrent runs.
    */
   async expireOrderWithStockRelease(
     orderId: string,
@@ -68,13 +70,14 @@ export class InternalJobsService {
       });
       if (u.count === 0) return;
       transitioned = true;
-      if (order.vendorApprovalSelections != null) {
-        for (const item of order.items) {
-          await tx.plant.update({
-            where: { id: item.plantId },
-            data: { stockQuantity: { increment: item.quantity } },
-          });
-        }
+
+      if (order.inventoryDeliveredAt) return;
+
+      const lines = this.plantInventory.linesFromOrderItems(order.items);
+      if (order.inventoryReservedAt) {
+        await this.plantInventory.releaseReserved(tx, lines);
+      } else if (order.vendorApprovalSelections != null) {
+        await this.plantInventory.legacyRestoreAvailable(tx, lines);
       }
     });
 

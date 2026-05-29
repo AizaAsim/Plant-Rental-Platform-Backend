@@ -1,6 +1,19 @@
 import { ApiProperty, ApiPropertyOptional } from "@nestjs/swagger";
-import { IsBoolean, IsNumber, IsOptional, IsString, Min, MinLength } from "class-validator";
+import { IsBoolean, IsNumber, IsOptional, IsString, Min, MinLength, IsArray, ValidateNested } from "class-validator";
 import { Type } from "class-transformer";
+
+export class VendorPackagePlantLineDto {
+  @ApiProperty({ example: "clh1234567890abcdef" })
+  @IsString()
+  @MinLength(1)
+  plant_id: string;
+
+  @ApiProperty({ example: 2, minimum: 1 })
+  @Type(() => Number)
+  @IsNumber()
+  @Min(1)
+  quantity: number;
+}
 
 export class CreateVendorPackageDto {
   @ApiProperty({ example: "Corporate corner office" })
@@ -71,6 +84,16 @@ export class CreateVendorPackageDto {
   @IsOptional()
   @IsBoolean()
   is_active?: boolean;
+
+  @ApiPropertyOptional({
+    type: [VendorPackagePlantLineDto],
+    description: "Plants allocated to this package (template only — does not reduce inventory)",
+  })
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => VendorPackagePlantLineDto)
+  plants?: VendorPackagePlantLineDto[];
 }
 
 export class UpdateVendorPackageDto {
@@ -147,4 +170,11 @@ export class UpdateVendorPackageDto {
   @IsOptional()
   @IsBoolean()
   is_active?: boolean;
+
+  @ApiPropertyOptional({ type: [VendorPackagePlantLineDto] })
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => VendorPackagePlantLineDto)
+  plants?: VendorPackagePlantLineDto[];
 }

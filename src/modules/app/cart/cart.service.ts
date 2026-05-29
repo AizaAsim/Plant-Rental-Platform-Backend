@@ -13,6 +13,49 @@ import { Decimal } from "@prisma/client/runtime/library";
 export class CartService {
   constructor(private prisma: PrismaService) {}
 
+  private readonly packageItemsInclude = {
+    package: {
+      include: {
+        items: {
+          include: {
+            plant: {
+              include: {
+                images: { where: { isPrimary: true }, take: 1 },
+              },
+            },
+          },
+        },
+      },
+    },
+    customPackage: {
+      include: {
+        items: {
+          include: {
+            plant: {
+              include: {
+                images: { where: { isPrimary: true }, take: 1 },
+              },
+            },
+          },
+        },
+      },
+    },
+    vendorPackage: {
+      include: {
+        nursery: { select: { id: true, name: true, city: true } },
+        plants: {
+          include: {
+            plant: {
+              include: {
+                images: { where: { isPrimary: true }, take: 1 },
+              },
+            },
+          },
+        },
+      },
+    },
+  } satisfies Prisma.CartInclude["packageItems"];
+
   // Helper: Get or create cart
   private async getOrCreateCart(userId: string) {
     let cart = await this.prisma.cart.findFirst({
@@ -38,40 +81,7 @@ export class CartService {
           },
         },
         packageItems: {
-          include: {
-            package: {
-              include: {
-                items: {
-                  include: {
-                    plant: {
-                      include: {
-                        images: {
-                          where: { isPrimary: true },
-                          take: 1,
-                        },
-                      },
-                    },
-                  },
-                },
-              },
-            },
-            customPackage: {
-              include: {
-                items: {
-                  include: {
-                    plant: {
-                      include: {
-                        images: {
-                          where: { isPrimary: true },
-                          take: 1,
-                        },
-                      },
-                    },
-                  },
-                },
-              },
-            },
-          },
+          include: this.packageItemsInclude,
         },
       },
     });
@@ -182,6 +192,9 @@ export class CartService {
       } else if (packageItem.customPackage) {
         subtotal = subtotal.plus(packageItem.customPackage.price.times(packageItem.quantity));
         itemsCount += packageItem.quantity;
+      } else if (packageItem.vendorPackage) {
+        subtotal = subtotal.plus(packageItem.vendorPackage.basePrice.times(packageItem.quantity));
+        itemsCount += packageItem.quantity;
       }
     }
 
@@ -229,6 +242,7 @@ export class CartService {
         id: pkgItem.id,
         package: pkgItem.package,
         custom_package: pkgItem.customPackage,
+        vendor_package: pkgItem.vendorPackage,
         quantity: pkgItem.quantity,
       })),
       summary,
@@ -518,6 +532,44 @@ export class CartService {
             details: "Custom package no longer exists",
           });
         }
+      } else if (pkgItem.vendorPackageId) {
+        const vendorPackage = await this.prisma.vendorPackage.findUnique({
+          where: { id: pkgItem.vendorPackageId },
+          include: {
+            plants: {
+              include: { plant: { select: { id: true, name: true, stockQuantity: true, isActive: true } } },
+            },
+          },
+        });
+
+        if (!vendorPackage || !vendorPackage.isActive) {
+          issues.push({
+            item_id: pkgItem.id,
+            issue: "OUT_OF_STOCK",
+            details: "Vendor package is no longer available",
+          });
+          continue;
+        }
+
+        if (vendorPackage.plants.length === 0) {
+          issues.push({
+            item_id: pkgItem.id,
+            issue: "OUT_OF_STOCK",
+            details: "Vendor package has no plants allocated",
+          });
+          continue;
+        }
+
+        for (const line of vendorPackage.plants) {
+          const need = line.quantity * pkgItem.quantity;
+          if (!line.plant.isActive || line.plant.stockQuantity < need) {
+            issues.push({
+              item_id: pkgItem.id,
+              issue: "OUT_OF_STOCK",
+              details: `Insufficient stock for ${line.plant.name}: need ${need}, available ${line.plant.stockQuantity}`,
+            });
+          }
+        }
       }
     }
 
@@ -605,10 +657,13 @@ export class CartService {
 
   // POST /api/v1/cart/packages - Add package to cart
   async addPackage(userId: string, addPackageDto: any) {
-    const { package_id, custom_package_id, quantity = 1 } = addPackageDto;
+    const { package_id, custom_package_id, vendor_package_id, quantity = 1 } = addPackageDto;
 
-    if (!package_id && !custom_package_id) {
-      throw new BadRequestException("Either package_id or custom_package_id is required");
+    const idCount = [package_id, custom_package_id, vendor_package_id].filter(Boolean).length;
+    if (idCount !== 1) {
+      throw new BadRequestException(
+        "Exactly one of package_id, custom_package_id, or vendor_package_id is required"
+      );
     }
 
     const cart = await this.getOrCreateCart(userId);
@@ -677,6 +732,57 @@ export class CartService {
           data: {
             cartId: cart.id,
             customPackageId: custom_package_id,
+            quantity,
+          },
+        });
+      }
+    } else if (vendor_package_id) {
+      const vendorPackage = await this.prisma.vendorPackage.findFirst({
+        where: {
+          OR: [{ id: vendor_package_id }, { publicId: vendor_package_id }],
+          isActive: true,
+        },
+        include: {
+          plants: {
+            include: { plant: { select: { id: true, name: true, stockQuantity: true, isActive: true } } },
+          },
+        },
+      });
+
+      if (!vendorPackage) {
+        throw new NotFoundException("Vendor package not found");
+      }
+
+      if (vendorPackage.plants.length === 0) {
+        throw new BadRequestException("Vendor package has no plants allocated");
+      }
+
+      for (const line of vendorPackage.plants) {
+        const need = line.quantity * quantity;
+        if (!line.plant.isActive || line.plant.stockQuantity < need) {
+          throw new BadRequestException(
+            `Insufficient stock for ${line.plant.name}: need ${need}, available ${line.plant.stockQuantity}`
+          );
+        }
+      }
+
+      const existing = await this.prisma.cartPackageItem.findFirst({
+        where: {
+          cartId: cart.id,
+          vendorPackageId: vendorPackage.id,
+        },
+      });
+
+      if (existing) {
+        await this.prisma.cartPackageItem.update({
+          where: { id: existing.id },
+          data: { quantity: existing.quantity + quantity },
+        });
+      } else {
+        await this.prisma.cartPackageItem.create({
+          data: {
+            cartId: cart.id,
+            vendorPackageId: vendorPackage.id,
             quantity,
           },
         });
