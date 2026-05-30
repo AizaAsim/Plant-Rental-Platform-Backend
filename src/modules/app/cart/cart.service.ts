@@ -71,6 +71,11 @@ export class CartService {
                 },
               },
             },
+            vendorPackage: {
+              include: {
+                plants: { include: { plant: true } },
+              },
+            },
           },
         },
       },
@@ -133,6 +138,11 @@ export class CartService {
                   },
                 },
               },
+              vendorPackage: {
+                include: {
+                  plants: { include: { plant: true } },
+                },
+              },
             },
           },
         },
@@ -182,6 +192,9 @@ export class CartService {
       } else if (packageItem.customPackage) {
         subtotal = subtotal.plus(packageItem.customPackage.price.times(packageItem.quantity));
         itemsCount += packageItem.quantity;
+      } else if (packageItem.vendorPackage) {
+        subtotal = subtotal.plus(packageItem.vendorPackage.basePrice.times(packageItem.quantity));
+        itemsCount += packageItem.quantity;
       }
     }
 
@@ -229,6 +242,8 @@ export class CartService {
         id: pkgItem.id,
         package: pkgItem.package,
         custom_package: pkgItem.customPackage,
+        vendor_package: pkgItem.vendorPackage,
+        selected_plants: pkgItem.selectedPlants,
         quantity: pkgItem.quantity,
       })),
       summary,
@@ -605,15 +620,70 @@ export class CartService {
 
   // POST /api/v1/cart/packages - Add package to cart
   async addPackage(userId: string, addPackageDto: any) {
-    const { package_id, custom_package_id, quantity = 1 } = addPackageDto;
+    const {
+      package_id,
+      custom_package_id,
+      vendor_package_id,
+      selected_plants,
+      quantity = 1,
+    } = addPackageDto;
 
-    if (!package_id && !custom_package_id) {
-      throw new BadRequestException("Either package_id or custom_package_id is required");
+    if (!package_id && !custom_package_id && !vendor_package_id) {
+      throw new BadRequestException(
+        "One of package_id, custom_package_id, or vendor_package_id is required"
+      );
     }
 
     const cart = await this.getOrCreateCart(userId);
 
-    if (package_id) {
+    if (vendor_package_id) {
+      const vendorPkg = await this.prisma.vendorPackage.findFirst({
+        where: {
+          OR: [{ id: vendor_package_id }, { publicId: vendor_package_id }],
+          isActive: true,
+        },
+        include: { plants: true },
+      });
+      if (!vendorPkg) throw new NotFoundException("Vendor package not found");
+
+      const picks = (Array.isArray(selected_plants) ? selected_plants : []) as {
+        plant_id: string;
+        quantity: number;
+      }[];
+      if (picks.length === 0) {
+        throw new BadRequestException("selected_plants[] is required for vendor packages");
+      }
+      const allowed = new Set(vendorPkg.plants.map((p) => p.plantId));
+      let totalQty = 0;
+      for (const sp of picks) {
+        if (!allowed.has(sp.plant_id)) {
+          throw new BadRequestException(`Plant ${sp.plant_id} is not in this package`);
+        }
+        totalQty += sp.quantity;
+      }
+      if (totalQty > vendorPkg.maxPlantCount) {
+        throw new BadRequestException(`Exceeds package max plant count (${vendorPkg.maxPlantCount})`);
+      }
+
+      const existing = await this.prisma.cartPackageItem.findFirst({
+        where: { cartId: cart.id, vendorPackageId: vendorPkg.id },
+      });
+      if (existing) {
+        await this.prisma.cartPackageItem.update({
+          where: { id: existing.id },
+          data: { quantity: existing.quantity + quantity, selectedPlants: picks },
+        });
+      } else {
+        await this.prisma.cartPackageItem.create({
+          data: {
+            cartId: cart.id,
+            vendorPackageId: vendorPkg.id,
+            selectedPlants: picks,
+            quantity,
+          },
+        });
+      }
+    } else if (package_id) {
       const packageData = await this.prisma.plantPackage.findFirst({
         where: {
           id: package_id,

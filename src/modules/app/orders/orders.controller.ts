@@ -39,6 +39,7 @@ import { RolesGuard } from "../auth/guard/roles.guard";
 import { Roles } from "../auth/decorators/roles.decorator";
 import { UserRole, OrderStatus, OrderType } from "@prisma/client";
 import { UsersService } from "../users/users.service";
+import { PickupFlowService } from "./pickup-flow.service";
 
 @ApiTags("Orders")
 @Controller("api/v1/orders")
@@ -47,7 +48,8 @@ export class OrdersController {
     private readonly ordersService: OrdersService,
     private readonly orderContractFlow: OrderContractFlowService,
     private readonly orderComplaints: OrderComplaintsService,
-    private readonly usersService: UsersService
+    private readonly usersService: UsersService,
+    private readonly pickupFlow: PickupFlowService
   ) {}
 
   @Post("checkout")
@@ -63,6 +65,16 @@ export class OrdersController {
   @ApiResponse({ status: 400, description: "Cart validation failed" })
   async checkout(@Request() req, @Body() checkoutDto: any) {
     return this.ordersService.checkout(req.user.id, checkoutDto);
+  }
+
+  @Post("checkout/rental-booking")
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.USER)
+  @ApiBearerAuth()
+  @HttpCode(HttpStatus.CREATED)
+  @ApiOperation({ summary: "Create rental booking order from vendor package" })
+  async createRentalBooking(@Request() req, @Body() body: Record<string, unknown>) {
+    return this.ordersService.createRentalBooking(req.user.id, body);
   }
 
   @Get()
@@ -125,6 +137,16 @@ export class OrdersController {
   @ApiResponse({ status: 200, description: "Aggregated rental lines + meta" })
   async getCustomerActiveRentals(@Request() req) {
     return this.ordersService.getCustomerActiveRentals(req.user.id);
+  }
+
+  @Get("customer/order-tabs")
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.USER)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: "Customer orders grouped by UI tab" })
+  @ApiQuery({ name: "tab", required: false })
+  async getCustomerOrderTabs(@Request() req, @Query("tab") tab?: string) {
+    return this.ordersService.getCustomerOrderTabs(req.user.id, tab);
   }
 
   // --- Contract v3.1: delivery / return / penalty (user) ---
@@ -239,6 +261,16 @@ export class OrdersController {
   @ApiOperation({ summary: "List your order complaints" })
   async listMyComplaints(@Request() req, @Query() query: { page?: number; limit?: number }) {
     return this.orderComplaints.listForUser(req.user.id, query);
+  }
+
+  @Get("complaints/:complaint_id")
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.USER)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: "Get complaint detail with message thread" })
+  @ApiParam({ name: "complaint_id", description: "Complaint UUID" })
+  async getComplaintDetail(@Request() req, @Param("complaint_id") complaintId: string) {
+    return this.orderComplaints.getOneForUser(req.user.id, complaintId);
   }
 
   @Get(":order_id/fulfillment-summary")
@@ -368,6 +400,21 @@ export class OrdersController {
     return this.ordersService.initiateReturn(req.user.id, orderId, itemId, returnDto);
   }
 
+  @Post(":order_id/pickup-request")
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.USER)
+  @ApiBearerAuth()
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: "Request pickup for a rental line (non-terminal)" })
+  @ApiParam({ name: "order_id", description: "Order UUID or order number" })
+  async createPickupRequest(
+    @Request() req,
+    @Param("order_id") orderId: string,
+    @Body() body: Record<string, unknown>
+  ) {
+    return this.pickupFlow.createPickupRequest(req.user.id, orderId, body as any);
+  }
+
   // ========== VENDOR ORDER MANAGEMENT ==========
 
   @Get("vendor/orders")
@@ -381,12 +428,25 @@ export class OrdersController {
   @ApiQuery({ name: "order_type", required: false })
   @ApiQuery({ name: "date_from", required: false, type: String })
   @ApiQuery({ name: "date_to", required: false, type: String })
+  @ApiQuery({ name: "queue", required: false, description: "vendor_request_order → PENDING only" })
   @ApiResponse({
     status: 200,
     description: "Orders retrieved successfully",
   })
   async getVendorOrders(@Request() req, @Query() filterDto: any) {
     return this.ordersService.getVendorOrders(req.user.id, filterDto);
+  }
+
+  @Get("vendor/rental-extensions")
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.VENDOR)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: "Vendor rental extension approval queue" })
+  @ApiQuery({ name: "status", required: false })
+  @ApiQuery({ name: "page", required: false, type: Number })
+  @ApiQuery({ name: "limit", required: false, type: Number })
+  async listVendorRentalExtensions(@Request() req, @Query() query: any) {
+    return this.ordersService.listVendorRentalExtensions(req.user.id, query);
   }
 
   @Get("vendor/orders/stats")
@@ -463,6 +523,46 @@ export class OrdersController {
     @Param("order_id") orderId: string
   ) {
     return this.ordersService.getVendorOrderPaymentStatus(req.user.id, orderId);
+  }
+
+  @Get("vendor/orders/:order_id/maintenance")
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.VENDOR)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: "Vendor maintenance dashboard for an order" })
+  @ApiParam({ name: "order_id", description: "Order UUID or order number" })
+  async getVendorOrderMaintenance(@Request() req, @Param("order_id") orderId: string) {
+    return this.ordersService.getVendorOrderMaintenance(req.user.id, orderId);
+  }
+
+  @Post("vendor/orders/:order_id/assign-pickup")
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.VENDOR)
+  @ApiBearerAuth()
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: "Assign gardener(s) for pickup" })
+  @ApiParam({ name: "order_id", description: "Order UUID or order number" })
+  async assignPickup(
+    @Request() req,
+    @Param("order_id") orderId: string,
+    @Body() body: Record<string, unknown>
+  ) {
+    return this.pickupFlow.assignPickup(req.user.id, orderId, body as any);
+  }
+
+  @Post("vendor/orders/:order_id/complete-pickup")
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.VENDOR, UserRole.GARDENER)
+  @ApiBearerAuth()
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: "Complete pickup and restock inventory" })
+  @ApiParam({ name: "order_id", description: "Order UUID or order number" })
+  async completePickup(
+    @Request() req,
+    @Param("order_id") orderId: string,
+    @Body() body: Record<string, unknown>
+  ) {
+    return this.pickupFlow.completePickup(req.user.id, req.user.role, orderId, body as any);
   }
 
   @Put("vendor/orders/:order_id/approve")
@@ -617,6 +717,35 @@ export class OrdersController {
   @ApiOperation({ summary: "List complaints for vendor nursery orders" })
   async listVendorComplaints(@Request() req, @Query() query: { page?: number; limit?: number }) {
     return this.orderComplaints.listForVendor(req.user.id, query);
+  }
+
+  @Post("vendor/complaints/:complaint_id/respond")
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.VENDOR)
+  @ApiBearerAuth()
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: "Vendor responds to a complaint" })
+  @ApiParam({ name: "complaint_id", description: "Complaint UUID" })
+  async respondToComplaint(
+    @Request() req,
+    @Param("complaint_id") complaintId: string,
+    @Body() body: { message: string; proposed_resolution: string; attachments?: string[] }
+  ) {
+    return this.orderComplaints.respond(req.user.id, complaintId, body);
+  }
+
+  @Put("vendor/complaints/:complaint_id/status")
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.VENDOR)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: "Update complaint status" })
+  @ApiParam({ name: "complaint_id", description: "Complaint UUID" })
+  async updateComplaintStatus(
+    @Request() req,
+    @Param("complaint_id") complaintId: string,
+    @Body() body: { status: string; resolution_note?: string }
+  ) {
+    return this.orderComplaints.updateStatus(req.user.id, complaintId, body as any);
   }
 
   @Post("vendor/orders/:order_id/assign-gardener")

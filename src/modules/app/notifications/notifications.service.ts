@@ -244,4 +244,70 @@ export class NotificationsService {
     });
     return { success: true, mock: true };
   }
+
+  async sendEvent(body: {
+    event_type: string;
+    reference_type?: string;
+    reference_id?: string;
+    recipient_user_ids: string[];
+    channels?: NotifyChannel[];
+    title: string;
+    message: string;
+    metadata?: Record<string, unknown>;
+  }) {
+    if (!body?.event_type?.trim()) {
+      throw new BadRequestException("event_type is required");
+    }
+    if (!body?.title?.trim() || !body?.message?.trim()) {
+      throw new BadRequestException("title and message are required");
+    }
+    if (!body.recipient_user_ids?.length) {
+      throw new BadRequestException("recipient_user_ids is required");
+    }
+
+    const channels = (body.channels?.length ? body.channels : ["IN_APP"]) as NotifyChannel[];
+    const notificationType = this.mapEventToNotificationType(body.event_type);
+
+    const results: { user_id: string; ok: boolean; detail?: string }[] = [];
+    for (const uid of body.recipient_user_ids) {
+      const user = await this.prisma.user.findUnique({ where: { id: uid }, select: { id: true } });
+      if (!user) {
+        results.push({ user_id: uid, ok: false, detail: "User not found" });
+        continue;
+      }
+      try {
+        await this.deliverChannels(
+          uid,
+          body.title,
+          body.message,
+          notificationType,
+          body.reference_type ?? body.event_type,
+          body.reference_id ?? null,
+          channels
+        );
+        results.push({ user_id: uid, ok: true });
+      } catch (e: any) {
+        results.push({ user_id: uid, ok: false, detail: e?.message || "delivery failed" });
+      }
+    }
+
+    return {
+      success: true,
+      event_type: body.event_type,
+      metadata: body.metadata ?? {},
+      delivered: results.filter((r) => r.ok).length,
+      results,
+      mock: true,
+    };
+  }
+
+  private mapEventToNotificationType(eventType: string): NotificationType {
+    const upper = eventType.toUpperCase();
+    if (upper.includes("BOOKING") || upper.includes("MAINTENANCE")) return NotificationType.BOOKING;
+    if (upper.includes("RENTAL") || upper.includes("EXTENSION") || upper.includes("PICKUP")) {
+      return NotificationType.RENTAL;
+    }
+    if (upper.includes("PROMOTION")) return NotificationType.PROMOTION;
+    return NotificationType.ORDER;
+  }
 }

@@ -149,12 +149,16 @@ export class PaymentsService {
       if (order.paymentStatus === PaymentStatus.PAID) {
         throw new BadRequestException("This order is already paid");
       }
-      const payEligible = new Set<OrderStatus>([OrderStatus.SLOT_CONFIRMED, OrderStatus.AWAITING_PAYMENT]);
-      if (!payEligible.has(order.status)) {
-        throw new BadRequestException(
-          `Order payment requires a confirmed delivery slot first (status must be SLOT_CONFIRMED or AWAITING_PAYMENT; current: ${order.status})`
-        );
-      }
+    const payEligible = new Set<OrderStatus>([
+      OrderStatus.CONFIRMED,
+      OrderStatus.SLOT_CONFIRMED,
+      OrderStatus.AWAITING_PAYMENT,
+    ]);
+    if (!payEligible.has(order.status)) {
+      throw new BadRequestException(
+        `Order payment requires vendor approval (status must be CONFIRMED, SLOT_CONFIRMED, or AWAITING_PAYMENT; current: ${order.status})`
+      );
+    }
       this.assertOpenPaymentWindow(order);
       amount = order.totalAmount;
       orderId = order.id;
@@ -299,7 +303,7 @@ export class PaymentsService {
             where: { id: orderId },
             select: { status: true, workflowMeta: true },
           });
-          if (curDup?.status === OrderStatus.SLOT_CONFIRMED) {
+          if (curDup?.status === OrderStatus.SLOT_CONFIRMED || curDup?.status === OrderStatus.CONFIRMED) {
             const wm = this.orderWorkflowMeta(curDup.workflowMeta);
             const payExp = this.resolvePaymentWindowIso(wm);
             await tx.order.update({
@@ -343,7 +347,7 @@ export class PaymentsService {
           where: { id: orderId },
           select: { status: true, workflowMeta: true },
         });
-        if (cur?.status === OrderStatus.SLOT_CONFIRMED) {
+        if (cur?.status === OrderStatus.SLOT_CONFIRMED || cur?.status === OrderStatus.CONFIRMED) {
           const wm = this.orderWorkflowMeta(cur.workflowMeta);
           const payExp = this.resolvePaymentWindowIso(wm);
           await tx.order.update({
@@ -440,9 +444,12 @@ export class PaymentsService {
     const orderPayment = payment.order;
     if (payment.paymentType === PaymentType.ORDER && orderPayment) {
       if (orderPayment.paymentStatus !== PaymentStatus.PAID) {
-        if (orderPayment.status !== OrderStatus.AWAITING_PAYMENT) {
+        if (
+          orderPayment.status !== OrderStatus.AWAITING_PAYMENT &&
+          orderPayment.status !== OrderStatus.CONFIRMED
+        ) {
           throw new BadRequestException(
-            `Order payment can only be verified after payment is initiated (order status AWAITING_PAYMENT; current: ${orderPayment.status})`
+            `Order payment can only be verified after payment is initiated (order status AWAITING_PAYMENT or CONFIRMED; current: ${orderPayment.status})`
           );
         }
         this.assertOpenPaymentWindow(orderPayment);

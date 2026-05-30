@@ -1332,4 +1332,101 @@ export class TasksService {
       },
     });
   }
+
+  async createMaintenanceLog(
+    gardenerUserId: string,
+    taskId: string,
+    body: {
+      visit_date: string;
+      start_time: string;
+      end_time: string;
+      tasks_performed: string[];
+      maintenance_notes?: string;
+      photo_urls?: string[];
+    }
+  ) {
+    if (!body?.visit_date || !body?.start_time || !body?.end_time) {
+      throw new BadRequestException("visit_date, start_time, and end_time are required");
+    }
+    if (!body.tasks_performed?.length) {
+      throw new BadRequestException("tasks_performed is required");
+    }
+    if (body.start_time >= body.end_time) {
+      throw new BadRequestException("end_time must be after start_time");
+    }
+
+    const gardener = await this.prisma.gardener.findUnique({
+      where: { userId: gardenerUserId },
+    });
+    if (!gardener) throw new NotFoundException("Gardener profile not found");
+
+    const task = await this.prisma.maintenanceTask.findFirst({
+      where: {
+        id: taskId,
+        gardenerId: gardener.id,
+        status: { in: [TaskStatus.ACCEPTED, TaskStatus.IN_PROGRESS] },
+      },
+      include: {
+        nursery: { select: { vendorId: true, name: true } },
+        orderItem: { select: { id: true } },
+      },
+    });
+    if (!task) {
+      throw new NotFoundException("Task not found or cannot log maintenance");
+    }
+
+    const visitDate = new Date(body.visit_date);
+
+    const log = await this.prisma.$transaction(async (tx) => {
+      const created = await tx.maintenanceVisitLog.create({
+        data: {
+          taskId: task.id,
+          orderItemId: task.orderItemId,
+          gardenerId: gardener.id,
+          visitDate,
+          startTime: body.start_time,
+          endTime: body.end_time,
+          tasksPerformed: body.tasks_performed,
+          maintenanceNotes: body.maintenance_notes?.trim() || null,
+          photoUrls: body.photo_urls?.length ? body.photo_urls : undefined,
+        },
+      });
+
+      await tx.maintenanceTask.update({
+        where: { id: task.id },
+        data: {
+          status: TaskStatus.COMPLETED,
+          completedAt: new Date(),
+          completionNotes: body.maintenance_notes?.trim() || null,
+        },
+      });
+
+      return created;
+    });
+
+    await this.notify(
+      task.userId,
+      "Maintenance visit completed",
+      `Your maintenance visit on ${body.visit_date} has been completed.`,
+      NotificationType.BOOKING,
+      task.id
+    );
+
+    if (task.nursery?.vendorId) {
+      await this.notify(
+        task.nursery.vendorId,
+        "Maintenance visit logged",
+        `Gardener completed maintenance for task ${task.taskNumber}.`,
+        NotificationType.BOOKING,
+        task.id
+      );
+    }
+
+    return {
+      maintenance_log_id: log.id,
+      task_id: task.id,
+      visit_date: body.visit_date,
+      tasks_performed: body.tasks_performed,
+    };
+  }
 }

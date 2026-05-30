@@ -1,5 +1,5 @@
-import { Controller, Get, Param } from "@nestjs/common";
-import { ApiOperation, ApiParam, ApiResponse, ApiTags } from "@nestjs/swagger";
+import { Controller, Get, Param, Query } from "@nestjs/common";
+import { ApiOperation, ApiParam, ApiQuery, ApiResponse, ApiTags } from "@nestjs/swagger";
 import { VendorPackagesService } from "./vendor-packages.service";
 
 /**
@@ -18,5 +18,20 @@ export class NurseryVendorPackagesController {
   @ApiResponse({ status: 404, description: "Nursery not found or inactive" })
   listForNursery(@Param("nursery_id") nurseryId: string) {
     return this.vendorPackagesService.listPublicCatalogueForNursery(nurseryId);
+  }
+
+  @Get(":nursery_id/packages/:package_id/available-plants")
+  @ApiOperation({ summary: "List in-stock plants assigned to a package (customer plant picker)" })
+  @ApiParam({ name: "nursery_id", description: "Nursery UUID" })
+  @ApiParam({ name: "package_id", description: "Package public id or UUID" })
+  @ApiQuery({ name: "include_out_of_stock", required: false, type: Boolean })
+  @ApiResponse({ status: 200, description: "Selectable plants for this package" })
+  listAvailablePlants(
+    @Param("nursery_id") nurseryId: string,
+    @Param("package_id") packageId: string,
+    @Query("include_out_of_stock") includeOutOfStock?: string
+  ) {
+    const include = includeOutOfStock === "true";
+    return this.vendorPackagesService.listAvailablePlantsForPackage(nurseryId, packageId, include);
   }
 }

@@ -289,6 +289,14 @@ export class UsersController {
     );
   }
 
+  @Get("order-history/:order_id/detail")
+  @ApiOperation({ summary: "Completed rental archive detail (maintenance, extensions, penalties)" })
+  @ApiParam({ name: "order_id", description: "Order ID" })
+  @ApiResponse({ status: 200, description: "Order history detail retrieved successfully" })
+  async getOrderHistoryDetail(@Request() req, @Param("order_id") orderId: string) {
+    return this.usersService.getOrderHistoryDetail(req.user.id, orderId);
+  }
+
   // Booking History
   @Get("booking-history")
   @ApiOperation({ summary: "Get user's service booking history" })

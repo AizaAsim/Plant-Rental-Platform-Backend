@@ -8,7 +8,7 @@ import {
 import { UpdateProfileDto } from "./dto/profile.dto";
 import { CreateAddressDto, UpdateAddressDto } from "./dto/address.dto";
 import { PrismaService } from "src/prisma/prisma.service";
-import { Prisma, RentalStatus, OrderStatus, BookingStatus, NotificationType, OrderType } from "@prisma/client";
+import { Prisma, RentalStatus, OrderStatus, BookingStatus, NotificationType, OrderType, ReviewableType } from "@prisma/client";
 import { Decimal } from "@prisma/client/runtime/library";
 
 @Injectable()
@@ -570,6 +570,165 @@ export class UsersService {
         limit,
         total,
         totalPages: Math.ceil(total / limit),
+      },
+    };
+  }
+
+  async getOrderHistoryDetail(userId: string, orderId: string) {
+    const order = await this.prisma.order.findFirst({
+      where: { id: orderId, userId },
+      include: {
+        nursery: { select: { id: true, name: true, slug: true } },
+        vendorPackage: { select: { publicId: true, name: true, tier: true, includesMaintenance: true } },
+        deliveryAddress: true,
+        items: {
+          include: {
+            plant: {
+              include: { images: { where: { isPrimary: true }, take: 1 } },
+            },
+            rentalExtensions: { orderBy: { createdAt: "desc" } },
+            maintenanceVisitLogs: {
+              orderBy: { visitDate: "desc" },
+              include: {
+                gardener: {
+                  include: { user: { select: { fullName: true } } },
+                },
+              },
+            },
+            maintenanceTasks: {
+              include: {
+                gardener: {
+                  include: { user: { select: { fullName: true } } },
+                },
+                visitLogs: { orderBy: { visitDate: "desc" } },
+              },
+            },
+            pickupRequests: { orderBy: { createdAt: "desc" } },
+          },
+        },
+        payments: { orderBy: { createdAt: "desc" } },
+        orderPenalty: true,
+        orderComplaints: { orderBy: { createdAt: "desc" } },
+        reviews: { where: { reviewableType: ReviewableType.NURSERY } },
+      },
+    });
+
+    if (!order) {
+      throw new NotFoundException("Order not found");
+    }
+
+    const maintenanceHistory = order.items.flatMap((item) =>
+      item.maintenanceVisitLogs.map((log) => ({
+        maintenance_log_id: log.id,
+        order_item_id: item.id,
+        plant_name: item.plant.name,
+        visit_date: log.visitDate.toISOString().slice(0, 10),
+        start_time: log.startTime,
+        end_time: log.endTime,
+        tasks_performed: log.tasksPerformed,
+        maintenance_notes: log.maintenanceNotes,
+        photo_urls: log.photoUrls,
+        gardener_name: log.gardener.user.fullName,
+      }))
+    );
+
+    const gardenerLogs = order.items.flatMap((item) =>
+      item.maintenanceTasks
+        .filter((t) => t.completedAt)
+        .map((t) => ({
+          task_id: t.id,
+          task_number: t.taskNumber,
+          gardener_name: t.gardener?.user.fullName ?? null,
+          scheduled_date: t.scheduledDate.toISOString().slice(0, 10),
+          completed_at: t.completedAt?.toISOString() ?? null,
+          completion_notes: t.completionNotes,
+        }))
+    );
+
+    const extensionRecords = order.items.flatMap((item) =>
+      item.rentalExtensions.map((ext) => ({
+        extension_id: ext.id,
+        order_item_id: item.id,
+        original_end_date: ext.originalEndDate.toISOString().slice(0, 10),
+        new_end_date: ext.newEndDate.toISOString().slice(0, 10),
+        extension_price: Number(ext.extensionPrice),
+        payment_status: ext.paymentStatus,
+        vendor_approval_status: ext.vendorApprovalStatus,
+      }))
+    );
+
+    const pickupSummary = order.items.flatMap((item) =>
+      item.pickupRequests.map((pr) => ({
+        pickup_request_id: pr.id,
+        order_item_id: item.id,
+        status: pr.status,
+        requested_pickup_date: pr.requestedPickupDate.toISOString().slice(0, 10),
+        preferred_time_from: pr.preferredTimeFrom,
+        preferred_time_to: pr.preferredTimeTo,
+      }))
+    );
+
+    const hasNurseryReview = order.reviews.some((r) => r.reviewableId === order.nurseryId);
+
+    return {
+      order_summary: {
+        order_id: order.id,
+        order_number: order.orderNumber,
+        status: order.status,
+        payment_status: order.paymentStatus,
+        order_type: order.orderType,
+        total_amount: Number(order.totalAmount),
+        deposit_amount: Number(order.depositAmount),
+        created_at: order.createdAt.toISOString(),
+        delivered_at: order.deliveredAt?.toISOString() ?? null,
+        nursery: order.nursery,
+        package: order.vendorPackage,
+      },
+      rental_summary: {
+        items: order.items.map((item) => ({
+          order_item_id: item.id,
+          plant_id: item.plantId,
+          plant_name: item.plant.name,
+          quantity: item.quantity,
+          rental_status: item.rentalStatus,
+          rent_start_date: item.rentStartDate?.toISOString().slice(0, 10) ?? null,
+          rent_end_date: item.rentEndDate?.toISOString().slice(0, 10) ?? null,
+          actual_return_date: item.actualReturnDate?.toISOString().slice(0, 10) ?? null,
+        })),
+      },
+      maintenance_history: maintenanceHistory,
+      gardener_logs: gardenerLogs,
+      extension_records: extensionRecords,
+      penalty_payments: order.orderPenalty
+        ? [
+            {
+              penalty_id: order.orderPenalty.id,
+              amount: Number(order.orderPenalty.runningTotal),
+              pay_status: order.orderPenalty.payStatus,
+              overdue_days: order.orderPenalty.overdueDays,
+            },
+          ]
+        : [],
+      pickup_summary: pickupSummary,
+      invoice: {
+        payments: order.payments.map((p) => ({
+          payment_id: p.id,
+          amount: Number(p.amount),
+          payment_type: p.paymentType,
+          status: p.status,
+          created_at: p.createdAt.toISOString(),
+        })),
+        subtotal: Number(order.subtotal),
+        delivery_fee: Number(order.deliveryFee),
+        tax_amount: Number(order.taxAmount),
+        discount_amount: Number(order.discountAmount),
+        total_amount: Number(order.totalAmount),
+      },
+      review_eligibility: {
+        can_review_nursery: order.status === OrderStatus.COMPLETED && !hasNurseryReview,
+        can_review_maintenance:
+          order.status === OrderStatus.COMPLETED &&
+          Boolean(order.vendorPackage?.includesMaintenance),
       },
     };
   }

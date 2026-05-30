@@ -7,7 +7,7 @@ import {
   BadRequestException,
 } from "@nestjs/common";
 import * as bcrypt from "bcrypt";
-import { UserRole } from "@prisma/client";
+import { UserRole, OrderStatus, ReviewableType } from "@prisma/client";
 import { contractOk, contractFail } from "src/common/contract/response";
 import { ContractErrorCode } from "src/common/contract/error-codes";
 import { NurseryFilterDto } from "./dto/nursery-filter.dto";
@@ -441,6 +441,118 @@ export class NurseriesService {
       items: reviews,
       pagination: { page: parsedPage, limit: parsedLimit, total, totalPages: Math.ceil(total / parsedLimit) },
     };
+  }
+
+  async createNurseryReview(
+    userId: string,
+    nurseryId: string,
+    body: {
+      order_id: string;
+      rating: number;
+      plant_quality_rating?: number;
+      delivery_rating?: number;
+      maintenance_rating?: number;
+      comment?: string;
+      images?: string[];
+    }
+  ) {
+    if (!body?.order_id) {
+      throw new BadRequestException("order_id is required");
+    }
+
+    const ratings = [
+      body.rating,
+      body.plant_quality_rating,
+      body.delivery_rating,
+      body.maintenance_rating,
+    ].filter((r) => r != null) as number[];
+
+    for (const r of ratings) {
+      if (!Number.isFinite(r) || r < 1 || r > 5) {
+        throw new BadRequestException("All ratings must be numbers from 1 to 5");
+      }
+    }
+
+    if (body.comment != null && body.comment.trim().length > 0 && body.comment.trim().length < 10) {
+      throw new BadRequestException("comment must be at least 10 characters when provided");
+    }
+
+    const nursery = await this.prisma.nursery.findFirst({
+      where: { id: nurseryId, isActive: true },
+      select: { id: true },
+    });
+    if (!nursery) throw new NotFoundException("Nursery not found");
+
+    const order = await this.prisma.order.findFirst({
+      where: {
+        id: body.order_id,
+        userId,
+        nurseryId,
+        status: OrderStatus.COMPLETED,
+      },
+    });
+    if (!order) {
+      throw new BadRequestException("A completed order with this nursery is required to leave a review");
+    }
+
+    const existing = await this.prisma.review.findFirst({
+      where: {
+        userId,
+        reviewableType: ReviewableType.NURSERY,
+        reviewableId: nurseryId,
+        orderId: body.order_id,
+      },
+    });
+    if (existing) {
+      throw new ConflictException("You have already reviewed this nursery for this order");
+    }
+
+    const overall =
+      ratings.length > 0
+        ? Math.round(ratings.reduce((a, b) => a + b, 0) / ratings.length)
+        : body.rating;
+
+    const breakdown = {
+      overall: body.rating,
+      plant_quality: body.plant_quality_rating ?? null,
+      delivery: body.delivery_rating ?? null,
+      maintenance: body.maintenance_rating ?? null,
+    };
+
+    const review = await this.prisma.review.create({
+      data: {
+        userId,
+        reviewableType: ReviewableType.NURSERY,
+        reviewableId: nurseryId,
+        orderId: body.order_id,
+        rating: overall,
+        title: JSON.stringify(breakdown),
+        comment: body.comment?.trim() || null,
+        isVerifiedPurchase: true,
+        images: body.images?.length
+          ? { create: body.images.map((url) => ({ imageUrl: url })) }
+          : undefined,
+      },
+      include: {
+        user: { select: { id: true, fullName: true, avatarUrl: true } },
+        images: true,
+      },
+    });
+
+    const agg = await this.prisma.review.aggregate({
+      where: { reviewableType: ReviewableType.NURSERY, reviewableId: nurseryId, isActive: true },
+      _avg: { rating: true },
+      _count: true,
+    });
+    await this.prisma.nursery.update({
+      where: { id: nurseryId },
+      data: {
+        ratingAvg: new Decimal((agg._avg.rating ?? overall).toFixed(1)),
+        totalReviews: agg._count,
+      },
+    });
+
+    return review;
   }
 
   // ─── Check Serviceability ───────────────────────────────────────────────────

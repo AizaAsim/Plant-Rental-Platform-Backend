@@ -554,6 +554,82 @@ export class PlantsService {
     });
   }
 
+  // ─── POST /api/v1/plants/vendor/plants/inventory ─────────────────────────
+
+  private async defaultInventoryCategoryId() {
+    const preferred = await this.prisma.plantCategory.findFirst({
+      where: { slug: "indoor-plants", isActive: true },
+      select: { id: true },
+    });
+    if (preferred) return preferred.id;
+    const fallback = await this.prisma.plantCategory.findFirst({
+      where: { isActive: true },
+      orderBy: { name: "asc" },
+      select: { id: true },
+    });
+    if (!fallback) {
+      throw new BadRequestException("No plant category configured; seed categories first");
+    }
+    return fallback.id;
+  }
+
+  async createInventoryPlant(
+    vendorId: string,
+    body: { name: string; stock_quantity: number },
+    imageFile: UploadFileMeta
+  ) {
+    const name = body.name?.trim();
+    if (!name || name.length < 2) {
+      throw new BadRequestException("name is required (min 2 characters)");
+    }
+    const stock = Number(body.stock_quantity);
+    if (!Number.isInteger(stock) || stock < 0) {
+      throw new BadRequestException("stock_quantity must be a non-negative integer");
+    }
+    if (!imageFile?.buffer?.length) {
+      throw new BadRequestException("image file is required");
+    }
+    if (!imageFile.mimetype?.toLowerCase().startsWith("image/")) {
+      throw new BadRequestException("Only image files are allowed");
+    }
+
+    const nursery = await this.prisma.nursery.findUnique({ where: { vendorId } });
+    if (!nursery) throw new BadRequestException("Vendor must have a nursery to add plants");
+
+    const categoryId = await this.defaultInventoryCategoryId();
+    const slug = await this.ensureUniqueSlug(this.generateSlug(name), nursery.id);
+    const { url } = await this.media.uploadFile(vendorId, imageFile, "plants", undefined);
+
+    const plant = await this.prisma.plant.create({
+      data: {
+        nurseryId: nursery.id,
+        categoryId,
+        name,
+        slug,
+        maintenanceLevel: MaintenanceLevel.LOW,
+        isAvailableForRent: false,
+        isAvailableForSale: false,
+        stockQuantity: stock,
+        isActive: true,
+        images: {
+          create: [{ imageUrl: url, isPrimary: true, displayOrder: 0 }],
+        },
+      },
+      include: {
+        images: { where: { isPrimary: true }, take: 1 },
+      },
+    });
+
+    return {
+      plant_id: plant.id,
+      name: plant.name,
+      stock_quantity: plant.stockQuantity,
+      stock_status: plant.stockQuantity > 0 ? "AVAILABLE" : "OUT_OF_STOCK",
+      image_url: plant.images[0]?.imageUrl ?? url,
+      created_at: plant.createdAt.toISOString(),
+    };
+  }
+
   // ─── POST /api/v1/plants/vendor/plants ───────────────────────────────────
 
   async createPlant(vendorId: string, createDto: any) {

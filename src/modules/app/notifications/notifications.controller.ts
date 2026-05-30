@@ -52,4 +52,13 @@ export class NotificationsController {
   async deviceToken(@Request() req, @Body() body: any) {
     return this.notificationsService.registerDeviceToken(req.user.id, body);
   }
+
+  @Post("events")
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.ADMIN)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: "Dispatch standardized domain notification event" })
+  async sendEvent(@Body() body: any) {
+    return this.notificationsService.sendEvent(body);
+  }
 }

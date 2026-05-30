@@ -36,6 +36,8 @@ import {
   FULFILLMENT_LINE_CONDITIONS,
 } from "./fulfillment-line.constants";
 import { PenaltyService } from "./penalty.service";
+import { PickupFlowService } from "./pickup-flow.service";
+import { enrichOrderForClient } from "./order-ui.contract";
 
 const VENDOR_REJECT_REASON_MIN_LEN = 3;
 const VENDOR_REJECT_REASON_MAX_LEN = 2000;
@@ -48,7 +50,8 @@ export class OrdersService {
     private cartService: CartService,
     private readonly rentalExtension: RentalExtensionService,
     private readonly domainNotifications: DomainNotificationsService,
-    private readonly penaltyService: PenaltyService
+    private readonly penaltyService: PenaltyService,
+    private readonly pickupFlow: PickupFlowService
   ) {}
 
   /** reason or rejection_reason; trimmed non-empty bounded length */
@@ -1041,109 +1044,19 @@ export class OrdersService {
     return this.rentalExtension.extendForUser(userId, orderId, itemId, extendDto ?? {});
   }
 
-  // POST /api/v1/orders/{order_id}/items/{item_id}/return
+  // POST /api/v1/orders/{order_id}/items/{item_id}/return — delegates to pickup-request (non-terminal)
   async initiateReturn(userId: string, orderId: string, itemId: string, returnDto: any) {
-    const { return_date, pickup_time_slot } = returnDto ?? {};
-
-    const oid = await resolveOrderId(this.prisma, orderId);
-    if (!oid) throw new NotFoundException("Order not found");
-
-    const order = await this.prisma.order.findFirst({
-      where: {
-        id: oid,
-        userId,
-      },
-      include: {
-        items: {
-          include: {
-            plant: true,
-          },
-        },
-        nursery: true,
-      },
+    const { return_date, preferred_time_from, preferred_time_to, notes } = returnDto ?? {};
+    return this.pickupFlow.createPickupRequest(userId, orderId, {
+      order_item_id: itemId,
+      requested_pickup_date:
+        return_date != null && String(return_date).trim()
+          ? String(return_date)
+          : new Date().toISOString().slice(0, 10),
+      preferred_time_from: preferred_time_from ?? "09:00",
+      preferred_time_to: preferred_time_to ?? "17:00",
+      notes,
     });
-
-    if (!order) {
-      throw new NotFoundException("Order not found");
-    }
-
-    this.assertCustomerOrderAllowsRentalMutation(order, "Return initiation");
-
-    if (
-      order.status !== OrderStatus.DELIVERED &&
-      order.status !== OrderStatus.COMPLETED &&
-      order.status !== OrderStatus.OUT_FOR_DELIVERY
-    ) {
-      throw new BadRequestException(
-        "Returns can only be initiated when the order is OUT_FOR_DELIVERY, DELIVERED, or COMPLETED"
-      );
-    }
-
-    const orderItem = order.items.find((i) => i.id === itemId);
-
-    if (!orderItem) {
-      throw new NotFoundException("Order item not found");
-    }
-
-    if (orderItem.orderType !== OrderType.RENT) {
-      throw new BadRequestException("Item is not a rental");
-    }
-
-    if (orderItem.rentalStatus === RentalStatus.RETURNED) {
-      throw new BadRequestException("Rental item is already returned");
-    }
-
-    const returnEligible: RentalStatus[] = [
-      RentalStatus.ACTIVE,
-      RentalStatus.EXTENDED,
-      RentalStatus.OVERDUE,
-    ];
-    const rs = orderItem.rentalStatus;
-    if (!rs || !returnEligible.includes(rs)) {
-      throw new BadRequestException(
-        `Return requires rental status ACTIVE, EXTENDED, or OVERDUE (current: ${rs ?? "unset"})`
-      );
-    }
-
-    let returnDate: Date;
-    if (return_date != null && String(return_date).trim() !== "") {
-      returnDate = new Date(String(return_date));
-      if (Number.isNaN(returnDate.getTime())) {
-        throw new BadRequestException("return_date must be a valid date");
-      }
-    } else {
-      returnDate = new Date();
-    }
-    void pickup_time_slot;
-
-    // Update order item
-    await this.prisma.orderItem.update({
-      where: { id: itemId },
-      data: {
-        rentalStatus: RentalStatus.RETURNED,
-        actualReturnDate: returnDate,
-      },
-    });
-
-    // Create maintenance task for pickup (requires gardener assignment)
-    // For now, we'll just mark the return - gardener assignment happens separately
-    // The task will be created when gardener is assigned
-
-    // Release stock
-    await this.prisma.plant.update({
-      where: { id: orderItem.plantId },
-      data: {
-        stockQuantity: {
-          increment: orderItem.quantity,
-        },
-      },
-    });
-
-    return {
-      message: "Return initiated successfully",
-      return_date: returnDate,
-      pickup_scheduled: true,
-    };
   }
 
   // ========== VENDOR ORDER MANAGEMENT ==========
@@ -1158,12 +1071,13 @@ export class OrdersService {
       throw new NotFoundException("Nursery not found");
     }
 
-    const { status, order_type, date_from, date_to } = filterDto;
+    const { status, order_type, date_from, date_to, queue } = filterDto;
     const { pageNum, limitNum, skip } = this.normalizePaging(filterDto, 20);
 
     const where: Prisma.OrderWhereInput = {
       nurseryId: nursery.id,
-      ...(status && { status }),
+      ...(queue === "vendor_request_order" ? { status: OrderStatus.PENDING } : {}),
+      ...(status && queue !== "vendor_request_order" ? { status } : {}),
       ...(order_type && { orderType: order_type }),
       ...(date_from && { createdAt: { gte: new Date(date_from) } }),
       ...(date_to && { createdAt: { lte: new Date(date_to) } }),
@@ -2012,7 +1926,7 @@ export class OrdersService {
       return tx.order.update({
         where: { id: order.id },
         data: {
-          status: OrderStatus.CONFIRMED,
+          status: OrderStatus.AWAITING_PAYMENT,
           vendorApprovalSelections: selections as unknown as Prisma.InputJsonValue,
         },
         include: {
@@ -2033,7 +1947,16 @@ export class OrdersService {
       },
     });
 
-    return updated;
+    return {
+      ...updated,
+      approval_status: "APPROVED",
+      customer_order_tab: "Payment",
+      inventory_reserved: true,
+      reserved_items: updated.items.map((i) => ({
+        plant_id: i.plantId,
+        quantity: i.quantity,
+      })),
+    };
   }
 
   /** POST /api/v1/orders/vendor/orders/:order_id/process */
@@ -2289,6 +2212,315 @@ export class OrdersService {
       order_id: order.id,
       order_number: order.orderNumber,
       item: this.mapFulfillmentLineCustomer(oi),
+    };
+  }
+
+  /** GET /api/v1/orders/customer/order-tabs */
+  async getCustomerOrderTabs(userId: string, tab?: string) {
+    const windowHours = Number(process.env.ORDER_CUSTOMER_CANCEL_WINDOW_HOURS ?? 8) || 8;
+    const orders = await this.prisma.order.findMany({
+      where: { userId, orderType: { in: [OrderType.RENT, OrderType.MIXED] } },
+      include: {
+        nursery: { select: { id: true, name: true } },
+        items: { include: { plant: { select: { id: true, name: true } } } },
+        vendorPackage: { select: { id: true, publicId: true, name: true, tier: true } },
+      },
+      orderBy: { createdAt: "desc" },
+      take: 200,
+    });
+
+    const enriched = orders
+      .map((o) => ({
+        ...enrichOrderForClient(
+          {
+            id: o.id,
+            orderNumber: o.orderNumber,
+            status: o.status,
+            paymentStatus: o.paymentStatus,
+            createdAt: o.createdAt,
+            vendorApprovalSelections: o.vendorApprovalSelections,
+          },
+          windowHours
+        ),
+        nursery: o.nursery,
+        package_summary: o.vendorPackage
+          ? { name: o.vendorPackage.name, tier: o.vendorPackage.tier, package_id: o.vendorPackage.publicId }
+          : null,
+        pricing: {
+          total_amount: Number(o.totalAmount),
+          deposit_amount: Number(o.depositAmount),
+        },
+      }))
+      .filter((o) => (tab ? o.customer_order_tab === tab : true));
+
+    return { tab: tab ?? "all", items: enriched };
+  }
+
+  /** POST /api/v1/orders/checkout/rental-booking */
+  async createRentalBooking(userId: string, body: Record<string, unknown>) {
+    const nurseryId = String(body.nursery_id ?? "");
+    const packageId = String(body.package_id ?? "");
+    const deliveryAddressId = String(body.delivery_address_id ?? "");
+    if (!nurseryId || !packageId || !deliveryAddressId) {
+      throw new BadRequestException("nursery_id, package_id, and delivery_address_id are required");
+    }
+
+    const pkg = await this.prisma.vendorPackage.findFirst({
+      where: {
+        OR: [{ id: packageId }, { publicId: packageId }],
+        nurseryId,
+        isActive: true,
+      },
+      include: {
+        plants: { include: { plant: true } },
+      },
+    });
+    if (!pkg) throw new NotFoundException("Vendor package not found");
+
+    const selectedPlants = (Array.isArray(body.selected_plants) ? body.selected_plants : []) as {
+      plant_id: string;
+      quantity: number;
+    }[];
+    if (selectedPlants.length === 0) {
+      throw new BadRequestException("selected_plants[] is required");
+    }
+
+    const allowedPlantIds = new Set(pkg.plants.map((p) => p.plantId));
+    let totalQty = 0;
+    for (const sp of selectedPlants) {
+      if (!allowedPlantIds.has(sp.plant_id)) {
+        throw new BadRequestException(`Plant ${sp.plant_id} is not in this package`);
+      }
+      const plant = pkg.plants.find((p) => p.plantId === sp.plant_id)!.plant;
+      if (plant.stockQuantity < sp.quantity) {
+        throw new BadRequestException(`Insufficient stock for ${plant.name}`);
+      }
+      totalQty += sp.quantity;
+    }
+    if (totalQty > pkg.maxPlantCount) {
+      throw new BadRequestException(`Selected plants exceed package max (${pkg.maxPlantCount})`);
+    }
+
+    const address = await this.prisma.userAddress.findFirst({
+      where: { id: deliveryAddressId, userId },
+    });
+    if (!address) throw new NotFoundException("Delivery address not found");
+
+    const durationDays = Number(body.booking_duration_days ?? pkg.rentalDurationDays);
+    const subtotal = pkg.basePrice;
+    const deliveryFee = new Decimal(50);
+    const taxAmount = subtotal.times(0.05);
+    const totalAmount = subtotal.plus(deliveryFee).plus(taxAmount);
+
+    const bookingMeta = {
+      customer_name: body.customer_name,
+      customer_phone: body.customer_phone,
+      area: body.area,
+      delivery_address: body.delivery_address ?? address.addressLine1,
+      preferred_delivery_date: body.preferred_delivery_date,
+      preferred_time_slot: body.preferred_time_slot,
+      special_instructions: body.special_instructions,
+      add_ons: body.add_ons,
+    };
+
+    const order = await this.prisma.order.create({
+      data: {
+        orderNumber: this.generateOrderNumber(),
+        userId,
+        nurseryId,
+        vendorPackageId: pkg.id,
+        deliveryAddressId: address.id,
+        orderType: OrderType.RENT,
+        status: OrderStatus.PENDING,
+        subtotal,
+        deliveryFee,
+        taxAmount,
+        discountAmount: new Decimal(0),
+        depositAmount: pkg.depositAmount,
+        totalAmount,
+        paymentMethod: body.payment_method != null ? String(body.payment_method) : null,
+        notes: body.special_instructions != null ? String(body.special_instructions) : null,
+        bookingMeta: bookingMeta as object,
+        items: {
+          create: selectedPlants.map((sp) => {
+            const pp = pkg.plants.find((p) => p.plantId === sp.plant_id)!;
+            const unit = pp.plant.rentPriceMonthly ?? new Decimal(0);
+            return {
+              plantId: sp.plant_id,
+              quantity: sp.quantity,
+              orderType: OrderType.RENT,
+              unitPrice: unit,
+              depositPerUnit: pp.plant.depositAmount,
+              totalPrice: unit.times(sp.quantity),
+              rentStartDate: null,
+              rentEndDate: null,
+              rentalStatus: null,
+            };
+          }),
+        },
+      },
+      include: { items: true },
+    });
+
+    const windowHours = Number(process.env.ORDER_CUSTOMER_CANCEL_WINDOW_HOURS ?? 8) || 8;
+    const nursery = await this.prisma.nursery.findUnique({
+      where: { id: nurseryId },
+      select: { vendorId: true },
+    });
+    if (nursery?.vendorId) {
+      await this.prisma.notification.create({
+        data: {
+          userId: nursery.vendorId,
+          title: "New rental booking",
+          message: `New booking request ${order.orderNumber} received.`,
+          type: NotificationType.ORDER,
+          referenceType: "ORDER",
+          referenceId: order.id,
+        },
+      });
+    }
+
+    return {
+      ...enrichOrderForClient(
+        {
+          id: order.id,
+          orderNumber: order.orderNumber,
+          status: order.status,
+          paymentStatus: order.paymentStatus,
+          createdAt: order.createdAt,
+          vendorApprovalSelections: null,
+        },
+        windowHours
+      ),
+      order_id: order.id,
+      inventory_reserved: false,
+      vendor_request_order: true,
+    };
+  }
+
+  /** GET /api/v1/orders/vendor/rental-extensions */
+  async listVendorRentalExtensions(
+    vendorUserId: string,
+    query: { status?: string; page?: number; limit?: number }
+  ) {
+    const nursery = await this.prisma.nursery.findUnique({ where: { vendorId: vendorUserId } });
+    if (!nursery) throw new NotFoundException("Nursery not found");
+
+    const page = Math.max(1, Number(query.page) || 1);
+    const limit = Math.min(100, Math.max(1, Number(query.limit) || 20));
+    const skip = (page - 1) * limit;
+
+    const statusFilter = query.status?.toUpperCase() ?? "REQUESTED";
+    const vendorStatusMap: Record<string, string> = {
+      REQUESTED: "PENDING_VENDOR",
+      APPROVED: "AUTO_APPROVED",
+      REJECTED: "REJECTED",
+      PAID: "PAID",
+    };
+
+    const where: Prisma.RentalExtensionWhereInput = {
+      orderItem: { order: { nurseryId: nursery.id } },
+      ...(statusFilter === "PAID"
+        ? { paymentStatus: PaymentStatus.PAID }
+        : statusFilter === "REQUESTED"
+          ? { vendorApprovalStatus: "PENDING_VENDOR" as const }
+          : {}),
+    };
+
+    const [items, total] = await Promise.all([
+      this.prisma.rentalExtension.findMany({
+        where,
+        skip,
+        take: limit,
+        orderBy: { createdAt: "desc" },
+        include: {
+          orderItem: {
+            include: {
+              plant: { select: { id: true, name: true, stockQuantity: true } },
+              order: { select: { id: true, orderNumber: true } },
+            },
+          },
+        },
+      }),
+      this.prisma.rentalExtension.count({ where }),
+    ]);
+
+    return {
+      items: items.map((e) => ({
+        extension_id: e.id,
+        order_id: e.orderItem.order.id,
+        order_item_id: e.orderItemId,
+        requested_duration_days: Math.ceil(
+          (e.newEndDate.getTime() - e.originalEndDate.getTime()) / 86400000
+        ),
+        current_end_date: e.originalEndDate.toISOString().slice(0, 10),
+        new_end_date: e.newEndDate.toISOString().slice(0, 10),
+        extension_price: Number(e.extensionPrice),
+        status: e.vendorApprovalStatus,
+        payment_status: e.paymentStatus,
+        plant_availability:
+          e.orderItem.plant.stockQuantity > 0 ? "AVAILABLE" : "INSUFFICIENT",
+      })),
+      pagination: { page, limit, total, totalPages: Math.ceil(total / limit) || 0 },
+    };
+  }
+
+  /** GET /api/v1/orders/vendor/orders/:order_id/maintenance */
+  async getVendorOrderMaintenance(vendorUserId: string, orderIdOrNum: string) {
+    const { order } = await this.requireVendorOrder(vendorUserId, orderIdOrNum);
+    const rentLines = order.items.filter((i) => i.orderType === OrderType.RENT);
+    const lineIds = rentLines.map((i) => i.id);
+
+    const tasks = await this.prisma.maintenanceTask.findMany({
+      where: { orderItemId: { in: lineIds } },
+      include: {
+        gardener: { include: { user: { select: { id: true, fullName: true } } } },
+        visitLogs: { orderBy: { createdAt: "desc" } },
+      },
+      orderBy: { scheduledDate: "asc" },
+    });
+
+    const pkg = order.vendorPackageId
+      ? await this.prisma.vendorPackage.findUnique({
+          where: { id: order.vendorPackageId },
+          select: { includesMaintenance: true, name: true },
+        })
+      : null;
+
+    return {
+      order_id: order.id,
+      maintenance_enabled: pkg?.includesMaintenance ?? false,
+      package_name: pkg?.name ?? null,
+      assigned_gardeners: [
+        ...new Map(
+          tasks
+            .filter((t) => t.gardener)
+            .map((t) => [
+              t.gardener!.id,
+              { gardener_id: t.gardener!.id, name: t.gardener!.user.fullName },
+            ])
+        ).values(),
+      ],
+      upcoming_visits: tasks
+        .filter((t) => t.status !== "COMPLETED" && t.status !== "CANCELLED")
+        .map((t) => ({
+          task_id: t.id,
+          scheduled_date: t.scheduledDate.toISOString().slice(0, 10),
+          time_from: t.scheduledTime?.split("-")[0] ?? null,
+          time_to: t.scheduledTime?.split("-")[1] ?? null,
+          status: t.status,
+        })),
+      completed_history: tasks.flatMap((t) =>
+        (t.visitLogs ?? []).map((log) => ({
+          maintenance_log_id: log.id,
+          task_id: t.id,
+          visit_date: log.visitDate.toISOString().slice(0, 10),
+          tasks_performed: log.tasksPerformed,
+          notes: log.maintenanceNotes,
+          photo_urls: log.photoUrls,
+        }))
+      ),
+      can_reassign: true,
     };
   }
 }

@@ -172,6 +172,21 @@ export class TasksController {
     return this.tasksService.startTask(req.user.id, taskId);
   }
 
+  @Post(":task_id/maintenance-log")
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.GARDENER)
+  @ApiBearerAuth()
+  @HttpCode(HttpStatus.CREATED)
+  @ApiOperation({ summary: "Log structured maintenance visit and complete task" })
+  @ApiParam({ name: "task_id", description: "Task ID" })
+  async createMaintenanceLog(
+    @Request() req,
+    @Param("task_id") taskId: string,
+    @Body() body: any
+  ) {
+    return this.tasksService.createMaintenanceLog(req.user.id, taskId, body);
+  }
+
   @Post(":task_id/complete")
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(UserRole.GARDENER)

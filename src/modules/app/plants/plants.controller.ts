@@ -3,9 +3,9 @@ import {
   Controller, Get, Post, Put, Patch, Delete,
   Query, Param, Body, UseGuards, Request,
   HttpCode, HttpStatus,
-  UseInterceptors, UploadedFiles,
+  UseInterceptors, UploadedFiles, UploadedFile,
 } from "@nestjs/common";
-import { FilesInterceptor } from "@nestjs/platform-express";
+import { FilesInterceptor, FileInterceptor } from "@nestjs/platform-express";
 import {
   ApiTags, ApiOperation, ApiResponse,
   ApiParam, ApiQuery, ApiBearerAuth, ApiBody, ApiConsumes,
@@ -132,6 +132,40 @@ export class PlantsController {
   @ApiResponse({ status: 201, description: "Plant created successfully", type: PlantResponseDto })
   async createPlant(@Request() req, @Body() createDto: CreatePlantDto) {
     return this.plantsService.createPlant(req.user.id, createDto);
+  }
+
+  @Post("vendor/plants/inventory")
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.VENDOR)
+  @ApiBearerAuth("bearer")
+  @HttpCode(HttpStatus.CREATED)
+  @UseInterceptors(FileInterceptor("image", plantsImageMulter))
+  @ApiConsumes("multipart/form-data")
+  @ApiBody({
+    schema: {
+      type: "object",
+      required: ["name", "stock_quantity", "image"],
+      properties: {
+        name: { type: "string" },
+        stock_quantity: { type: "integer" },
+        image: { type: "string", format: "binary" },
+      },
+    },
+  })
+  @ApiOperation({ summary: "Create inventory-only plant (name, stock, single image)" })
+  async createInventoryPlant(
+    @Request() req,
+    @Body() body: { name: string; stock_quantity: string },
+    @UploadedFile() image: { buffer: Buffer; mimetype: string; size: number } | undefined
+  ) {
+    if (!image) {
+      throw new BadRequestException("image file is required");
+    }
+    return this.plantsService.createInventoryPlant(
+      req.user.id,
+      { name: body.name, stock_quantity: Number(body.stock_quantity) },
+      image
+    );
   }
 
   @Get("vendor/plants")

@@ -102,6 +102,24 @@ enum RentalStatus {
   EXTENDED
   RETURNED
   OVERDUE
+  PICKUP_PENDING
+}
+
+enum PickupRequestStatus {
+  REQUESTED
+  SCHEDULED
+  COMPLETED
+  CANCELLED
+}
+
+enum OrderComplaintType {
+  DAMAGED_PLANTS
+  INCORRECT_DELIVERY
+  UNHEALTHY_PLANTS
+  MISSING_ITEMS
+  MAINTENANCE_ISSUE
+  PICKUP_PROBLEM
+  OTHER
 }
 
 // RentalExtensionVendorApproval: when PENDING_VENDOR, customer extension waits for vendor before dates/payment apply.
@@ -135,6 +153,8 @@ enum TaskType {
   SCHEDULED_MAINTENANCE
   ON_DEMAND
   FREELANCE_SERVICE
+  DELIVERY
+  PICKUP
 }
 
 enum TaskStatus {
@@ -315,6 +335,8 @@ model User {
   customPackages     CustomPlantPackage[]
   recommendationPreference UserRecommendationPreference?
   orderComplaints            OrderComplaint[]
+  pickupRequests             PickupRequest[]
+  complaintMessages          OrderComplaintMessage[]
   registerMeta     Json?    @map("register_meta")
   mustChangePassword Boolean @default(false) @map("must_change_password")
   idempotencyRecords   IdempotencyRecord[]
@@ -532,6 +554,7 @@ model Plant {
   interactions   UserPlantInteraction[]
   packageItems   PlantPackageItem[]
   customPackageItems CustomPlantPackageItem[]
+  vendorPackagePlants VendorPackagePlant[]
 
   @@unique([nurseryId, slug])
   @@map("plants")
@@ -593,6 +616,7 @@ model Gardener {
   availability      GardenerAvailability[]
   serviceBookings   ServiceBooking[]
   maintenanceTasks  MaintenanceTask[]
+  maintenanceVisitLogs MaintenanceVisitLog[]
   gardenerEarnings  GardenerEarning[]
   staffRole         String?   @map("staff_role")
   staffNotes        String?   @map("staff_notes") @db.Text
@@ -709,6 +733,7 @@ model Order {
   user            User          @relation(fields: [userId], references: [id])
   nursery         Nursery       @relation(fields: [nurseryId], references: [id])
   deliveryAddress UserAddress   @relation(fields: [deliveryAddressId], references: [id])
+  vendorPackage   VendorPackage? @relation(fields: [vendorPackageId], references: [id])
   items           OrderItem[]
   payments        Payment[]
   vendorEarnings  VendorEarning[]
@@ -721,6 +746,9 @@ model Order {
   orderPenalty              OrderPenalty?
   orderComplaints           OrderComplaint[]
   freelanceJobs             FreelanceJob[]
+  vendorPackageId           String?       @map("vendor_package_id")
+  bookingMeta               Json?         @map("booking_meta")
+  pickupRequests            PickupRequest[]
 
   @@map("orders")
 }
@@ -755,6 +783,8 @@ model OrderItem {
   plant            Plant             @relation(fields: [plantId], references: [id])
   rentalExtensions RentalExtension[]
   maintenanceTasks MaintenanceTask[]
+  pickupRequests   PickupRequest[]
+  maintenanceVisitLogs MaintenanceVisitLog[]
 
   @@map("order_items")
 }
@@ -879,6 +909,7 @@ model MaintenanceTask {
   address         UserAddress       @relation(fields: [addressId], references: [id])
   images          TaskImage[]
   gardenerEarnings GardenerEarning[]
+  visitLogs       MaintenanceVisitLog[]
 
   @@map("maintenance_tasks")
 }
@@ -1301,6 +1332,8 @@ model CartPackageItem {
   cartId            String   @map("cart_id")
   packageId         String?  @map("package_id")
   customPackageId   String?  @map("custom_package_id")
+  vendorPackageId   String?  @map("vendor_package_id")
+  selectedPlants    Json?    @map("selected_plants")
   quantity          Int      @default(1)
   createdAt         DateTime @default(now()) @map("created_at")
   updatedAt         DateTime @updatedAt @map("updated_at")
@@ -1308,6 +1341,7 @@ model CartPackageItem {
   cart              Cart             @relation(fields: [cartId], references: [id], onDelete: Cascade)
   package           PlantPackage?    @relation(fields: [packageId], references: [id])
   customPackage     CustomPlantPackage? @relation(fields: [customPackageId], references: [id])
+  vendorPackage     VendorPackage?   @relation(fields: [vendorPackageId], references: [id])
 
   @@map("cart_package_items")
 }
@@ -1366,14 +1400,78 @@ model VendorPackage {
   allowsInstallments    Boolean  @default(false) @map("allows_installments")
   installmentOptions    Json?    @map("installment_options")
   addOns                Json?    @map("add_ons")
+  deliverySlots         Json?    @map("delivery_slots")
   isActive              Boolean  @default(true) @map("is_active")
   createdAt             DateTime @default(now()) @map("created_at")
   updatedAt             DateTime @updatedAt @map("updated_at")
 
-  nursery Nursery @relation(fields: [nurseryId], references: [id], onDelete: Cascade)
+  nursery   Nursery              @relation(fields: [nurseryId], references: [id], onDelete: Cascade)
+  plants    VendorPackagePlant[]
+  cartItems CartPackageItem[]
+  orders    Order[]
 
   @@index([nurseryId, isActive])
   @@map("vendor_packages")
+}
+
+model VendorPackagePlant {
+  id        String @id @default(uuid())
+  packageId String @map("package_id")
+  plantId   String @map("plant_id")
+  quantity  Int    @default(1)
+
+  package VendorPackage @relation(fields: [packageId], references: [id], onDelete: Cascade)
+  plant   Plant         @relation(fields: [plantId], references: [id], onDelete: Cascade)
+
+  @@unique([packageId, plantId])
+  @@index([plantId])
+  @@map("vendor_package_plants")
+}
+
+model PickupRequest {
+  id                  String              @id @default(uuid())
+  orderId             String              @map("order_id")
+  orderItemId         String              @map("order_item_id")
+  userId              String              @map("user_id")
+  status              PickupRequestStatus @default(REQUESTED)
+  requestedPickupDate DateTime            @map("requested_pickup_date") @db.Date
+  preferredTimeFrom   String              @map("preferred_time_from")
+  preferredTimeTo     String              @map("preferred_time_to")
+  notes               String?             @db.Text
+  assignedGardenerIds Json?               @map("assigned_gardener_ids")
+  pickupTaskId        String?             @map("pickup_task_id")
+  createdAt           DateTime            @default(now()) @map("created_at")
+  updatedAt           DateTime            @updatedAt @map("updated_at")
+
+  order     Order     @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  orderItem OrderItem @relation(fields: [orderItemId], references: [id], onDelete: Cascade)
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([orderId])
+  @@index([orderItemId])
+  @@map("pickup_requests")
+}
+
+model MaintenanceVisitLog {
+  id               String   @id @default(uuid())
+  taskId           String   @map("task_id")
+  orderItemId      String?  @map("order_item_id")
+  gardenerId       String   @map("gardener_id")
+  visitDate        DateTime @map("visit_date") @db.Date
+  startTime        String   @map("start_time")
+  endTime          String   @map("end_time")
+  tasksPerformed   String[] @map("tasks_performed")
+  maintenanceNotes String?  @map("maintenance_notes") @db.Text
+  photoUrls        Json?    @map("photo_urls")
+  createdAt        DateTime @default(now()) @map("created_at")
+
+  task      MaintenanceTask @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  orderItem OrderItem?      @relation(fields: [orderItemId], references: [id], onDelete: SetNull)
+  gardener  Gardener        @relation(fields: [gardenerId], references: [id], onDelete: Cascade)
+
+  @@index([taskId])
+  @@index([orderItemId])
+  @@map("maintenance_visit_logs")
 }
 
 model FreelanceJob {
@@ -1480,17 +1578,37 @@ model OrderComplaint {
   userId          String               @map("user_id")
   subject         String
   description     String               @db.Text
+  complaintType   OrderComplaintType   @default(OTHER) @map("complaint_type")
   status          OrderComplaintStatus @default(OPEN)
   attachments     Json?
+  resolutionNote  String?              @map("resolution_note") @db.Text
   createdAt       DateTime             @default(now()) @map("created_at")
   updatedAt       DateTime             @updatedAt @map("updated_at")
 
-  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
-  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  order    Order                   @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  user     User                    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  messages OrderComplaintMessage[]
 
   @@index([orderId])
   @@index([userId])
   @@map("order_complaints")
+}
+
+model OrderComplaintMessage {
+  id                 String   @id @default(uuid())
+  complaintId        String   @map("complaint_id")
+  authorUserId       String   @map("author_user_id")
+  authorRole         UserRole @map("author_role")
+  message            String   @db.Text
+  proposedResolution String?  @map("proposed_resolution")
+  attachments        Json?
+  createdAt          DateTime @default(now()) @map("created_at")
+
+  complaint OrderComplaint @relation(fields: [complaintId], references: [id], onDelete: Cascade)
+  author    User           @relation(fields: [authorUserId], references: [id], onDelete: Cascade)
+
+  @@index([complaintId])
+  @@map("order_complaint_messages")
 }
 
 model FreelanceMatchConfig {

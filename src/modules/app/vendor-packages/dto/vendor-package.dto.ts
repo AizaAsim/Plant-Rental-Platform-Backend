@@ -1,6 +1,30 @@
 import { ApiProperty, ApiPropertyOptional } from "@nestjs/swagger";
-import { IsBoolean, IsNumber, IsOptional, IsString, Min, MinLength } from "class-validator";
+import {
+  IsArray,
+  IsBoolean,
+  IsNumber,
+  IsOptional,
+  IsString,
+  Min,
+  MinLength,
+  ValidateNested,
+  IsUUID,
+} from "class-validator";
 import { Type } from "class-transformer";
+
+export class VendorPackagePlantLineDto {
+  @ApiProperty({ example: "00000000-0000-4000-8000-000000000001" })
+  @IsString()
+  @MinLength(1)
+  plant_id: string;
+
+  @ApiPropertyOptional({ example: 1, default: 1, minimum: 1 })
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  @Min(1)
+  quantity?: number;
+}
 
 export class CreateVendorPackageDto {
   @ApiProperty({ example: "Corporate corner office" })
@@ -66,6 +90,33 @@ export class CreateVendorPackageDto {
   @ApiPropertyOptional({ description: "JSON add-on catalogue" })
   @IsOptional()
   add_ons?: Record<string, unknown>;
+
+  @ApiPropertyOptional({
+    description: "Delivery capacity slots (day_of_week, time_from, time_to, capacity)",
+    type: "array",
+    items: { type: "object" },
+  })
+  @IsOptional()
+  delivery_slots?: Record<string, unknown>[];
+
+  @ApiPropertyOptional({
+    type: [VendorPackagePlantLineDto],
+    description: "Inventory plants assigned to this package (references only; no stock change)",
+  })
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => VendorPackagePlantLineDto)
+  plants?: VendorPackagePlantLineDto[];
+
+  @ApiPropertyOptional({
+    type: [String],
+    description: "Alias for plants[] with quantity 1 per id",
+  })
+  @IsOptional()
+  @IsArray()
+  @IsUUID("4", { each: true })
+  plant_ids?: string[];
 
   @ApiPropertyOptional({ example: true, default: true })
   @IsOptional()
@@ -143,8 +194,40 @@ export class UpdateVendorPackageDto {
   @IsOptional()
   add_ons?: Record<string, unknown>;
 
+  @ApiPropertyOptional({ type: "array", items: { type: "object" } })
+  @IsOptional()
+  delivery_slots?: Record<string, unknown>[];
+
+  @ApiPropertyOptional({ type: [VendorPackagePlantLineDto] })
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => VendorPackagePlantLineDto)
+  plants?: VendorPackagePlantLineDto[];
+
+  @ApiPropertyOptional({ type: [String] })
+  @IsOptional()
+  @IsArray()
+  @IsUUID("4", { each: true })
+  plant_ids?: string[];
+
   @ApiPropertyOptional()
   @IsOptional()
   @IsBoolean()
   is_active?: boolean;
+}
+
+export class SetVendorPackagePlantsDto {
+  @ApiPropertyOptional({ type: [VendorPackagePlantLineDto] })
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => VendorPackagePlantLineDto)
+  plants?: VendorPackagePlantLineDto[];
+
+  @ApiPropertyOptional({ type: [String], description: "Alias: each id gets quantity 1" })
+  @IsOptional()
+  @IsArray()
+  @IsUUID("4", { each: true })
+  plant_ids?: string[];
 }

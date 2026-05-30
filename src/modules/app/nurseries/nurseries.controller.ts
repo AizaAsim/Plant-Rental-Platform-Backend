@@ -341,4 +341,29 @@ export class NurseriesController {
   ) {
     return this.nurseriesService.getNurseryReviews(nurseryId, filterDto);
   }
+
+  @Post(":nursery_id/reviews")
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.USER)
+  @ApiBearerAuth("bearer")
+  @HttpCode(HttpStatus.CREATED)
+  @ApiOperation({ summary: "Review nursery after completed rental" })
+  @ApiParam({ name: "nursery_id", description: "Nursery ID" })
+  @ApiResponse({ status: 201, description: "Review created successfully" })
+  async createNurseryReview(
+    @Request() req,
+    @Param("nursery_id") nurseryId: string,
+    @Body()
+    body: {
+      order_id: string;
+      rating: number;
+      plant_quality_rating?: number;
+      delivery_rating?: number;
+      maintenance_rating?: number;
+      comment?: string;
+      images?: string[];
+    }
+  ) {
+    return this.nurseriesService.createNurseryReview(req.user.id, nurseryId, body);
+  }
 }

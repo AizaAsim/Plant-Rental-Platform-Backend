@@ -18,7 +18,11 @@ import { JwtAuthGuard } from "../auth/guard/jwt-auth.guard";
 import { RolesGuard } from "../auth/guard/roles.guard";
 import { Roles } from "../auth/decorators/roles.decorator";
 import { VendorPackagesService } from "./vendor-packages.service";
-import { CreateVendorPackageDto, UpdateVendorPackageDto } from "./dto/vendor-package.dto";
+import {
+  CreateVendorPackageDto,
+  UpdateVendorPackageDto,
+  SetVendorPackagePlantsDto,
+} from "./dto/vendor-package.dto";
 
 @ApiTags("Vendor packages (Phase 02)")
 @Controller("api/v1/vendor/packages")
@@ -63,6 +67,18 @@ export class VendorPackagesController {
   })
   async getOne(@Request() req: { user: { id: string } }, @Param("package_id") packageId: string) {
     return this.svc.getOne(req.user.id, packageId);
+  }
+
+  @Put(":package_id/plants")
+  @ApiOperation({ summary: "Replace plants assigned to a vendor package" })
+  @ApiParam({ name: "package_id", description: "Public package id or UUID" })
+  @ApiBody({ type: SetVendorPackagePlantsDto })
+  async setPlants(
+    @Request() req: { user: { id: string } },
+    @Param("package_id") packageId: string,
+    @Body() body: SetVendorPackagePlantsDto
+  ) {
+    return this.svc.setPackagePlants(req.user.id, packageId, body);
   }
 
   @Put(":package_id")

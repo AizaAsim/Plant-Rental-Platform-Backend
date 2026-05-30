@@ -612,10 +612,11 @@ export class RentalsService {
     newStatus: RentalStatus
   ) {
     const validTransitions: Record<RentalStatus, RentalStatus[]> = {
-      ACTIVE: ["EXTENDED", "RETURNED"],
-      EXTENDED: ["RETURNED"],
+      ACTIVE: ["EXTENDED", "RETURNED", "PICKUP_PENDING"],
+      EXTENDED: ["RETURNED", "PICKUP_PENDING"],
       RETURNED: [],
-      OVERDUE: ["RETURNED"],
+      OVERDUE: ["RETURNED", "PICKUP_PENDING"],
+      PICKUP_PENDING: ["RETURNED"],
     };
 
     if (!validTransitions[currentStatus].includes(newStatus)) {
