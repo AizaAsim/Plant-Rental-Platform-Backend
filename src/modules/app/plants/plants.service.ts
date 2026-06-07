@@ -630,6 +630,62 @@ export class PlantsService {
     };
   }
 
+  // ─── GET /api/v1/plants/vendor/plants/inventory ──────────────────────────
+
+  async getInventoryPlants(
+    vendorId: string,
+    query?: { search?: string; page?: number; limit?: number; stock_status?: string }
+  ) {
+    const nursery = await this.prisma.nursery.findUnique({ where: { vendorId } });
+    if (!nursery) {
+      return { items: [], pagination: { page: 1, limit: 20, total: 0, totalPages: 0 } };
+    }
+
+    const page = Math.max(1, Number(query?.page) || 1);
+    const limit = Math.min(100, Math.max(1, Number(query?.limit) || 20));
+    const skip = (page - 1) * limit;
+    const search = query?.search?.trim();
+    const stockStatus = query?.stock_status?.toLowerCase();
+
+    const where: Prisma.PlantWhereInput = {
+      nurseryId: nursery.id,
+      isActive: true,
+      isAvailableForRent: false,
+      isAvailableForSale: false,
+      ...(search ? { name: { contains: search, mode: "insensitive" } } : {}),
+      ...(stockStatus === "available" || stockStatus === "in_stock"
+        ? { stockQuantity: { gt: 0 } }
+        : {}),
+      ...(stockStatus === "out_of_stock" ? { stockQuantity: 0 } : {}),
+      ...(stockStatus === "low_stock" ? { stockQuantity: { lte: 5, gt: 0 } } : {}),
+    };
+
+    const [plants, total] = await Promise.all([
+      this.prisma.plant.findMany({
+        where,
+        skip,
+        take: limit,
+        orderBy: { createdAt: "desc" },
+        include: { images: { where: { isPrimary: true }, take: 1 } },
+      }),
+      this.prisma.plant.count({ where }),
+    ]);
+
+    return {
+      items: plants.map((p) => ({
+        plant_id: p.id,
+        name: p.name,
+        stock_quantity: p.stockQuantity,
+        stock_status: p.stockQuantity === 0 ? "OUT_OF_STOCK" : "AVAILABLE",
+        is_low_stock: p.stockQuantity > 0 && p.stockQuantity <= 5,
+        image_url: p.images[0]?.imageUrl ?? null,
+        created_at: p.createdAt.toISOString(),
+        updated_at: p.updatedAt.toISOString(),
+      })),
+      pagination: { page, limit, total, totalPages: Math.ceil(total / limit) || 0 },
+    };
+  }
+
   // ─── POST /api/v1/plants/vendor/plants ───────────────────────────────────
 
   async createPlant(vendorId: string, createDto: any) {

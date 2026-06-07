@@ -168,6 +168,35 @@ export class PlantsController {
     );
   }
 
+  @Get("vendor/plants/inventory")
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.VENDOR)
+  @ApiBearerAuth("bearer")
+  @ApiOperation({ summary: "List inventory-only plants (name, stock, image)" })
+  @ApiQuery({ name: "search", required: false, type: String })
+  @ApiQuery({ name: "page", required: false, type: Number })
+  @ApiQuery({ name: "limit", required: false, type: Number })
+  @ApiQuery({
+    name: "stock_status",
+    required: false,
+    enum: ["available", "in_stock", "out_of_stock", "low_stock"],
+  })
+  @ApiResponse({ status: 200, description: "Inventory plants retrieved successfully" })
+  async getInventoryPlants(
+    @Request() req,
+    @Query("search") search?: string,
+    @Query("page") page?: string,
+    @Query("limit") limit?: string,
+    @Query("stock_status") stockStatus?: string
+  ) {
+    return this.plantsService.getInventoryPlants(req.user.id, {
+      search,
+      page: page ? parseInt(page, 10) : undefined,
+      limit: limit ? parseInt(limit, 10) : undefined,
+      stock_status: stockStatus,
+    });
+  }
+
   @Get("vendor/plants")
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(UserRole.VENDOR)
