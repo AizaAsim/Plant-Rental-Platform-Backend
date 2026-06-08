@@ -111,6 +111,7 @@ async function clearDatabase() {
     "gardenerServiceArea",
     "gardenerSkillMapping",
     "gardener",
+    "vendorPackagePlant",
     "vendorPackage",
     "plantTagMapping",
     "plantImage",
@@ -934,6 +935,30 @@ async function main() {
       },
     ],
   });
+
+  const vpGreenBasic = await prisma.vendorPackage.findFirst({
+    where: { publicId: "vp-green-basic" },
+    select: { id: true },
+  });
+  const vpUrbanPremium = await prisma.vendorPackage.findFirst({
+    where: { publicId: "vp-urban-premium" },
+    select: { id: true },
+  });
+  if (vpGreenBasic) {
+    await prisma.vendorPackagePlant.createMany({
+      data: [
+        { packageId: vpGreenBasic.id, plantId: monstera.id, quantity: 1 },
+        { packageId: vpGreenBasic.id, plantId: snakePlant.id, quantity: 1 },
+      ],
+      skipDuplicates: true,
+    });
+  }
+  if (vpUrbanPremium) {
+    await prisma.vendorPackagePlant.createMany({
+      data: [{ packageId: vpUrbanPremium.id, plantId: birdOfParadise.id, quantity: 1 }],
+      skipDuplicates: true,
+    });
+  }
 
   console.log("⚙️  Settings, coupons & packages created");
 

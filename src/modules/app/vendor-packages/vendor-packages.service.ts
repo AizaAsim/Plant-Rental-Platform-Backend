@@ -1,5 +1,6 @@
-import { HttpStatus, Injectable } from "@nestjs/common";
+import { HttpException, HttpStatus, Injectable, Logger } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
+import { PrismaClientKnownRequestError } from "@prisma/client/runtime/library";
 import { Decimal } from "@prisma/client/runtime/library";
 import { PrismaService } from "src/prisma/prisma.service";
 import { contractOk, contractPublicId, contractFail } from "src/common/contract/response";
@@ -18,7 +19,61 @@ type PackageWithPlants = VendorPackage & {
 
 @Injectable()
 export class VendorPackagesService {
+  private readonly log = new Logger(VendorPackagesService.name);
+
   constructor(private readonly prisma: PrismaService) {}
+
+  private isUuid(ref: string): boolean {
+    return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+      ref.trim()
+    );
+  }
+
+  /** Public catalogue may receive nursery UUID or slug from the customer app. */
+  private async resolveActiveNursery(ref: string) {
+    const key = ref?.trim();
+    if (!key) return null;
+
+    const byId = this.isUuid(key)
+      ? await this.prisma.nursery.findFirst({
+          where: { id: key, isActive: true },
+          select: { id: true, name: true, slug: true },
+        })
+      : null;
+    if (byId) return byId;
+
+    return this.prisma.nursery.findFirst({
+      where: { slug: key, isActive: true },
+      select: { id: true, name: true, slug: true },
+    });
+  }
+
+  private rethrowCatalogueError(err: unknown, nurseryRef: string): never {
+    if (err instanceof PrismaClientKnownRequestError) {
+      if (err.code === "P2021" || err.code === "P2010") {
+        this.log.error(`Vendor package tables missing (run prisma migrate deploy): ${err.message}`);
+        throw new HttpException(
+          {
+            success: false,
+            error: {
+              code: "SERVICE_UNAVAILABLE",
+              message: "Vendor package catalogue is not available — run prisma migrate deploy",
+            },
+          },
+          HttpStatus.SERVICE_UNAVAILABLE
+        );
+      }
+      if (err.code === "P2023" || err.message.includes("UUID")) {
+        throw contractFail(
+          ContractErrorCode.VALIDATION_ERROR,
+          `Invalid nursery_id: ${nurseryRef}`,
+          HttpStatus.BAD_REQUEST
+        );
+      }
+    }
+    this.log.error(`vendor-packages catalogue failed for ${nurseryRef}`, err as Error);
+    throw err;
+  }
 
   private async nurseryForVendor(vendorId: string) {
     const n = await this.prisma.nursery.findUnique({ where: { vendorId } });
@@ -117,19 +172,20 @@ export class VendorPackagesService {
 
   private packageHasInStockPlants(row: PackageWithPlants): boolean {
     if (!row.plants.length) return true;
-    return row.plants.some((pp) => pp.plant.stockQuantity > 0);
+    return row.plants.some((pp) => (pp.plant?.stockQuantity ?? 0) > 0);
   }
 
   private plantLineDto(
-    pp: VendorPackagePlant & { plant: Plant & { images: PlantImage[] } }
+    pp: VendorPackagePlant & { plant: (Plant & { images: PlantImage[] }) | null }
   ) {
+    const plant = pp.plant;
     return {
       plant_id: pp.plantId,
       quantity: pp.quantity,
-      name: pp.plant.name,
-      stock_quantity: pp.plant.stockQuantity,
-      stock_status: pp.plant.stockQuantity > 0 ? "AVAILABLE" : "OUT_OF_STOCK",
-      image_url: pp.plant.images[0]?.imageUrl ?? null,
+      name: plant?.name ?? null,
+      stock_quantity: plant?.stockQuantity ?? 0,
+      stock_status: plant && plant.stockQuantity > 0 ? "AVAILABLE" : "OUT_OF_STOCK",
+      image_url: plant?.images?.[0]?.imageUrl ?? null,
     };
   }
 
@@ -324,47 +380,57 @@ export class VendorPackagesService {
   }
 
   /** Customer-facing: active packages with at least one in-stock assigned plant. */
-  async listPublicCatalogueForNursery(nurseryId: string) {
-    const nursery = await this.prisma.nursery.findFirst({
-      where: { id: nurseryId, isActive: true },
-      select: { id: true, name: true, slug: true },
-    });
-    if (!nursery)
-      throw contractFail(ContractErrorCode.RESOURCE_NOT_FOUND, "Nursery not found", HttpStatus.NOT_FOUND);
+  async listPublicCatalogueForNursery(nurseryRef: string) {
+    try {
+      const nursery = await this.resolveActiveNursery(nurseryRef);
+      if (!nursery) {
+        throw contractFail(
+          ContractErrorCode.RESOURCE_NOT_FOUND,
+          "Nursery not found",
+          HttpStatus.NOT_FOUND
+        );
+      }
 
-    const rows = await this.prisma.vendorPackage.findMany({
-      where: { nurseryId: nursery.id, isActive: true },
-      include: {
-        plants: {
-          include: {
-            plant: {
-              include: { images: { where: { isPrimary: true }, take: 1 } },
+      const rows = await this.prisma.vendorPackage.findMany({
+        where: { nurseryId: nursery.id, isActive: true },
+        include: {
+          plants: {
+            include: {
+              plant: {
+                include: { images: { where: { isPrimary: true }, take: 1 } },
+              },
             },
           },
         },
-      },
-      orderBy: { createdAt: "desc" },
-    });
+        orderBy: { createdAt: "desc" },
+      });
 
-    const inStockPackages = rows.filter((r) => this.packageHasInStockPlants(r));
+      const inStockPackages = rows.filter((r) => this.packageHasInStockPlants(r));
 
-    return contractOk({
-      nursery: { id: nursery.id, name: nursery.name, slug: nursery.slug },
-      items: inStockPackages.map((r) => this.toDto(r)),
-    });
+      return contractOk({
+        nursery: { id: nursery.id, name: nursery.name, slug: nursery.slug },
+        items: inStockPackages.map((r) => this.toDto(r)),
+      });
+    } catch (err) {
+      if (err && typeof err === "object" && "getStatus" in err) throw err;
+      this.rethrowCatalogueError(err, nurseryRef);
+    }
   }
 
   async listAvailablePlantsForPackage(
-    nurseryId: string,
+    nurseryRef: string,
     packageRef: string,
     includeOutOfStock = false
   ) {
-    const nursery = await this.prisma.nursery.findFirst({
-      where: { id: nurseryId, isActive: true },
-      select: { id: true },
-    });
-    if (!nursery)
-      throw contractFail(ContractErrorCode.RESOURCE_NOT_FOUND, "Nursery not found", HttpStatus.NOT_FOUND);
+    try {
+      const nursery = await this.resolveActiveNursery(nurseryRef);
+      if (!nursery) {
+        throw contractFail(
+          ContractErrorCode.RESOURCE_NOT_FOUND,
+          "Nursery not found",
+          HttpStatus.NOT_FOUND
+        );
+      }
 
     const pkg = await this.prisma.vendorPackage.findFirst({
       where: {
@@ -400,5 +466,9 @@ export class VendorPackagesService {
         stock_status,
       })),
     });
+    } catch (err) {
+      if (err && typeof err === "object" && "getStatus" in err) throw err;
+      this.rethrowCatalogueError(err, nurseryRef);
+    }
   }
 }
