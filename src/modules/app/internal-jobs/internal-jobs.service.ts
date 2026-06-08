@@ -178,7 +178,8 @@ export class InternalJobsService {
   }
 
   async dueReminders(body: Record<string, unknown>) {
-    const dryRun = body.dry_run === true;
+    // Default preview unless caller explicitly opts in (safe for Swagger / manual runs).
+    const dryRun = body.dry_run !== false;
     const today = new Date();
     today.setUTCHours(0, 0, 0, 0);
     const in3 = new Date(today);

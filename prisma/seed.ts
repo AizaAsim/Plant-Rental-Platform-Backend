@@ -80,9 +80,13 @@ async function clearDatabase() {
     "plantPackageItem",
     "plantPackage",
     "couponUsage",
+    "orderComplaintMessage",
+    "orderComplaint",
     "disputeMessage",
     "dispute",
+    "maintenanceVisitLog",
     "taskImage",
+    "pickupRequest",
     "maintenanceTask",
     "rentalExtension",
     "orderItem",
@@ -111,6 +115,7 @@ async function clearDatabase() {
     "gardenerServiceArea",
     "gardenerSkillMapping",
     "gardener",
+    "gardenerSkill",
     "vendorPackagePlant",
     "vendorPackage",
     "plantTagMapping",
@@ -125,6 +130,7 @@ async function clearDatabase() {
     "coupon",
     "platformSetting",
     "userRecommendationPreference",
+    "userAddress",
     "otpVerification",
     "refreshToken",
     "freelanceMatchConfig",
@@ -684,7 +690,11 @@ async function main() {
   const skillNames = ["Pruning", "Repotting", "Pest Control", "Plant Health", "Irrigation"];
   const skillMap: Record<string, string> = {};
   for (const name of skillNames) {
-    const s = await prisma.gardenerSkill.create({ data: { name } });
+    const s = await prisma.gardenerSkill.upsert({
+      where: { name },
+      update: {},
+      create: { name },
+    });
     skillMap[name] = s.id;
   }
 
@@ -900,48 +910,45 @@ async function main() {
     },
   });
 
-  await prisma.vendorPackage.createMany({
-    data: [
-      {
-        publicId: "vp-green-basic",
-        nurseryId: nursery1.id,
-        name: "Green Basic Rental",
-        tier: "BASIC",
-        description: "2 plants, 30-day rental, 1 maintenance visit",
-        maxPlantCount: 2,
-        rentalDurationDays: 30,
-        includesMaintenance: true,
-        maintenanceVisitsPerMonth: 1,
-        basePrice: money(4500),
-        depositAmount: money(2000),
-        allowsInstallments: false,
-        isActive: true,
-      },
-      {
-        publicId: "vp-urban-premium",
-        nurseryId: nursery2.id,
-        name: "Urban Premium",
-        tier: "PREMIUM",
-        description: "5 plants, 90-day rental, weekly maintenance",
-        maxPlantCount: 5,
-        rentalDurationDays: 90,
-        includesMaintenance: true,
-        maintenanceVisitsPerMonth: 4,
-        basePrice: money(25000),
-        depositAmount: money(8000),
-        allowsInstallments: true,
-        installmentOptions: { months: [3, 6] },
-        isActive: true,
-      },
-    ],
-  });
-
-  const vpGreenBasic = await prisma.vendorPackage.findFirst({
+  const vpGreenBasic = await prisma.vendorPackage.upsert({
     where: { publicId: "vp-green-basic" },
+    update: {},
+    create: {
+      publicId: "vp-green-basic",
+      nurseryId: nursery1.id,
+      name: "Green Basic Rental",
+      tier: "BASIC",
+      description: "2 plants, 30-day rental, 1 maintenance visit",
+      maxPlantCount: 2,
+      rentalDurationDays: 30,
+      includesMaintenance: true,
+      maintenanceVisitsPerMonth: 1,
+      basePrice: money(4500),
+      depositAmount: money(2000),
+      allowsInstallments: false,
+      isActive: true,
+    },
     select: { id: true },
   });
-  const vpUrbanPremium = await prisma.vendorPackage.findFirst({
+  const vpUrbanPremium = await prisma.vendorPackage.upsert({
     where: { publicId: "vp-urban-premium" },
+    update: {},
+    create: {
+      publicId: "vp-urban-premium",
+      nurseryId: nursery2.id,
+      name: "Urban Premium",
+      tier: "PREMIUM",
+      description: "5 plants, 90-day rental, weekly maintenance",
+      maxPlantCount: 5,
+      rentalDurationDays: 90,
+      includesMaintenance: true,
+      maintenanceVisitsPerMonth: 4,
+      basePrice: money(25000),
+      depositAmount: money(8000),
+      allowsInstallments: true,
+      installmentOptions: { months: [3, 6] },
+      isActive: true,
+    },
     select: { id: true },
   });
   if (vpGreenBasic) {

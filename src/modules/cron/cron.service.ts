@@ -40,4 +40,19 @@ export default class CronService {
       this.log.warn(`penalty sweep failed: ${e}`);
     }
   }
+
+  @Cron(process.env.DUE_REMINDER_CRON_CRON ?? CronExpression.EVERY_DAY_AT_8AM, {
+    name: "rental_due_reminders",
+  })
+  async rentalDueReminders() {
+    if (process.env.DUE_REMINDER_CRON_ENABLED === "false") {
+      return;
+    }
+    try {
+      const result = await this.internalJobs.dueReminders({ dry_run: false });
+      this.log.log(`due reminders: ${JSON.stringify(result)}`);
+    } catch (e) {
+      this.log.warn(`due reminders failed: ${e}`);
+    }
+  }
 }

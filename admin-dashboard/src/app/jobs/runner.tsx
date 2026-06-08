@@ -46,7 +46,7 @@ const jobs: JobDef[] = [
   },
   {
     key: "due_reminders",
-    label: "Due reminders (stub)",
+    label: "Rental due reminders (today + 3 days)",
     path: "/api/v1/internal/jobs/orders/due-reminders",
     defaultBody: { dry_run: true },
   },
