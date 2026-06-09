@@ -23,6 +23,8 @@ import {
 } from "@nestjs/swagger";
 import { NurseriesService } from "./nurseries.service";
 import { CreateNurseryDto } from "./dto/create-nursery.dto";
+import { UpdateNurseryDto } from "./dto/update-nursery.dto";
+import { NurseryListResponseDto, NurseryPublicDto } from "./dto/nursery-public.dto";
 import { UpdateWorkingHoursDto } from "./dto/working-hours.dto";
 import { UpdateServiceAreasDto } from "./dto/service-areas.dto";
 import { AddNurseryImagesDto } from "./dto/nursery-images.dto";
@@ -67,11 +69,15 @@ export class NurseriesController {
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(UserRole.VENDOR)
   @ApiBearerAuth("bearer")
-  @ApiOperation({ summary: "Update nursery profile" })
+  @ApiOperation({
+    summary: "Update nursery profile",
+    description:
+      "All fields optional. Use `logo_url` and `cover_image_url` with paths from POST /media/upload (field `path`).",
+  })
   @ApiResponse({ status: 200, description: "Nursery updated successfully" })
   async updateMyNursery(
     @Request() req,
-    @Body() updateDto: Partial<CreateNurseryDto>
+    @Body() updateDto: UpdateNurseryDto
   ) {
     return this.nurseriesService.updateMyNursery(req.user.id, updateDto);
   }
@@ -274,10 +280,26 @@ export class NurseriesController {
   @Get("slug/:slug")
   @ApiOperation({ summary: "Get nursery by slug" })
   @ApiParam({ name: "slug", description: "Nursery slug" })
-  @ApiResponse({ status: 200, description: "Nursery retrieved successfully" })
+  @ApiResponse({ status: 200, description: "Nursery retrieved successfully", type: NurseryPublicDto })
   @ApiResponse({ status: 404, description: "Nursery not found" })
   async findBySlug(@Param("slug") slug: string) {
     return this.nurseriesService.findBySlug(slug);
+  }
+
+  @Get("top-rated")
+  @ApiOperation({
+    summary: "Top-rated nurseries (customer home)",
+    description: "Active nurseries sorted by ratingAvg DESC, totalReviews DESC. Verified only by default.",
+  })
+  @ApiQuery({ name: "limit", required: false, type: Number, example: 5 })
+  @ApiQuery({ name: "is_verified", required: false, type: Boolean, example: true })
+  @ApiResponse({ status: 200, type: NurseryListResponseDto })
+  async findTopRated(
+    @Query("limit") limit?: string,
+    @Query("is_verified") isVerified?: string
+  ) {
+    const verified = isVerified === "false" ? false : true;
+    return this.nurseriesService.findTopRated(limit ? Number(limit) : 5, verified);
   }
 
   @Get()
@@ -293,7 +315,13 @@ export class NurseriesController {
   @ApiQuery({ name: "rating_min", required: false, type: Number })
   @ApiQuery({ name: "is_verified", required: false, type: Boolean })
   @ApiQuery({ name: "sort_by", required: false, enum: ["rating", "distance", "name"] })
-  @ApiResponse({ status: 200, description: "Nurseries retrieved successfully" })
+  @ApiQuery({
+    name: "sort_order",
+    required: false,
+    enum: ["asc", "desc"],
+    description: "Default desc. sort_by=rating uses ratingAvg then totalReviews.",
+  })
+  @ApiResponse({ status: 200, description: "Nurseries retrieved successfully", type: NurseryListResponseDto })
   async findAll(@Query() filterDto: any) {
     return this.nurseriesService.findAllNurseries(filterDto);
   }
@@ -301,9 +329,9 @@ export class NurseriesController {
   // ─── Parameterised routes LAST ──────────────────────────────────────────────
 
   @Get(":nursery_id")
-  @ApiOperation({ summary: "Get nursery details" })
-  @ApiParam({ name: "nursery_id", description: "Nursery ID" })
-  @ApiResponse({ status: 200, description: "Nursery details retrieved successfully" })
+  @ApiOperation({ summary: "Get nursery details (UUID or slug)" })
+  @ApiParam({ name: "nursery_id", description: "Nursery UUID or slug" })
+  @ApiResponse({ status: 200, description: "Nursery details retrieved successfully", type: NurseryPublicDto })
   @ApiResponse({ status: 404, description: "Nursery not found" })
   async findById(@Param("nursery_id") id: string) {
     return this.nurseriesService.findById(id);

@@ -13,8 +13,17 @@ import {
   UseInterceptors,
 } from "@nestjs/common";
 import { FileInterceptor, FilesInterceptor } from "@nestjs/platform-express";
-import { ApiBearerAuth, ApiBody, ApiConsumes, ApiOperation, ApiQuery, ApiTags } from "@nestjs/swagger";
+import {
+  ApiBearerAuth,
+  ApiBody,
+  ApiConsumes,
+  ApiOperation,
+  ApiQuery,
+  ApiResponse,
+  ApiTags,
+} from "@nestjs/swagger";
 import { MediaService } from "./media.service";
+import { MediaUploadResponseDto } from "./dto/media-upload-response.dto";
 import { JwtAuthGuard } from "../auth/guard/jwt-auth.guard";
 
 const imageFileFilter = (
@@ -28,8 +37,10 @@ const imageFileFilter = (
   cb(null, true);
 };
 
+const MAX_MEDIA_BYTES = Number(process.env.MEDIA_MAX_UPLOAD_BYTES ?? 10 * 1024 * 1024);
+
 const multerOpts = {
-  limits: { fileSize: 15 * 1024 * 1024 },
+  limits: { fileSize: MAX_MEDIA_BYTES },
   fileFilter: imageFileFilter,
 };
 
@@ -51,9 +62,22 @@ export class MediaController {
       },
     },
   })
-  @ApiQuery({ name: "folder", required: false })
-  @ApiQuery({ name: "resize", required: false })
-  @ApiOperation({ summary: "Upload single image" })
+  @ApiQuery({
+    name: "folder",
+    required: false,
+    description: "e.g. nurseries/logos, nurseries/covers, nurseries/gallery, plants, profiles",
+  })
+  @ApiQuery({
+    name: "resize",
+    required: false,
+    description: 'Optional hint e.g. "512x512" or "1600x900" (validated; crop when supported)',
+  })
+  @ApiResponse({ status: 201, type: MediaUploadResponseDto })
+  @ApiOperation({
+    summary: "Upload single image",
+    description:
+      "Multipart field name: **file**. Returns `url`, `path` (/uploads/…), and `key`. Files served at GET /uploads/…",
+  })
   async upload(
     @Request() req,
     @UploadedFile() file: { buffer: Buffer; mimetype: string; size: number } | undefined,
@@ -68,7 +92,11 @@ export class MediaController {
   @ApiBearerAuth()
   @UseInterceptors(FilesInterceptor("files", 20, multerOpts))
   @ApiConsumes("multipart/form-data")
-  @ApiOperation({ summary: "Upload multiple images" })
+  @ApiResponse({ status: 201, type: [MediaUploadResponseDto] })
+  @ApiOperation({
+    summary: "Upload multiple images",
+    description: "Multipart field name: **files** (max 20). Same response shape as single upload.",
+  })
   @ApiQuery({ name: "folder", required: false })
   @ApiQuery({ name: "resize", required: false })
   async uploadMany(

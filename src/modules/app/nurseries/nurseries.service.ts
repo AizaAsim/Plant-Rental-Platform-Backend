@@ -19,9 +19,17 @@ import { CreateNurseryDto } from "./dto/create-nursery.dto";
 import { UpdateWorkingHoursDto } from "./dto/working-hours.dto";
 import { UpdateServiceAreasDto } from "./dto/service-areas.dto";
 import { AddNurseryImagesDto } from "./dto/nursery-images.dto";
+import { UpdateNurseryDto } from "./dto/update-nursery.dto";
 import { Prisma, PrismaPromise } from "@prisma/client";
 import { Decimal } from "@prisma/client/runtime/library";
 import { PrismaService } from "src/prisma/prisma.service";
+import { toPublicNursery } from "./nursery.mapper";
+
+const MAX_NURSERY_GALLERY_IMAGES = 20;
+
+const publicNurseryInclude = {
+  images: { orderBy: { displayOrder: "asc" as const } },
+} satisfies Prisma.NurseryInclude;
 
 @Injectable()
 export class NurseriesService {
@@ -101,22 +109,41 @@ export class NurseriesService {
     });
   }
 
+  private buildNurseryOrderBy(
+    sortBy: string,
+    sortOrder: "asc" | "desc"
+  ): Prisma.NurseryOrderByWithRelationInput | Prisma.NurseryOrderByWithRelationInput[] {
+    const dir = sortOrder;
+    switch (sortBy) {
+      case "name":
+        return { name: dir };
+      case "rating":
+      default:
+        return dir === "desc"
+          ? [{ ratingAvg: "desc" }, { totalReviews: "desc" }]
+          : [{ ratingAvg: "asc" }, { totalReviews: "asc" }];
+    }
+  }
+
   // ─── Browse All Nurseries ───────────────────────────────────────────────────
 
   async findAllNurseries(filterDto: any) {
     const {
       page = 1, limit = 20, city, state, pincode,
       latitude, longitude, radius_km, rating_min, is_verified, sort_by = "rating",
+      sort_order,
     } = filterDto;
 
     const parsedPage = Number(page);
-    const parsedLimit = Number(limit);
+    const parsedLimit = Math.min(Math.max(Number(limit) || 20, 1), 100);
     const parsedRatingMin = rating_min ? Number(rating_min) : undefined;
     const parsedLatitude = latitude ? Number(latitude) : undefined;
     const parsedLongitude = longitude ? Number(longitude) : undefined;
     const parsedRadiusKm = radius_km ? Number(radius_km) : undefined;
     const parsedIsVerified =
       is_verified === "true" ? true : is_verified === "false" ? false : undefined;
+    const parsedSortOrder: "asc" | "desc" =
+      String(sort_order ?? "desc").toLowerCase() === "asc" ? "asc" : "desc";
 
     const where: Prisma.NurseryWhereInput = {
       isActive: true,
@@ -134,12 +161,7 @@ export class NurseriesService {
       }),
     };
 
-    let orderBy: Prisma.NurseryOrderByWithRelationInput = {};
-    switch (sort_by) {
-      case "rating": orderBy = { ratingAvg: "desc" }; break;
-      case "name":   orderBy = { name: "asc" }; break;
-      default:       orderBy = { ratingAvg: "desc" };
-    }
+    const orderBy = this.buildNurseryOrderBy(String(sort_by), parsedSortOrder);
 
     const skip = (parsedPage - 1) * parsedLimit;
     const [nurseries, total] = await Promise.all([
@@ -148,32 +170,27 @@ export class NurseriesService {
         orderBy,
         skip,
         take: parsedLimit,
-        include: {
-          workingHours: true,
-          images: { orderBy: { displayOrder: "asc" }, take: 3 },
-          _count: { select: { plants: true, orders: true } },
-        },
+        include: publicNurseryInclude,
       }),
       this.prisma.nursery.count({ where }),
     ]);
 
     let result = nurseries
       .map((nursery) => {
-        const data: any = { ...nursery };
+        let distance: number | undefined;
         if (parsedLatitude && parsedLongitude && nursery.latitude && nursery.longitude) {
-          const distance = this.calculateDistance(
+          distance = this.calculateDistance(
             parsedLatitude, parsedLongitude,
             Number(nursery.latitude), Number(nursery.longitude)
           );
-          data.distance = distance;
           if (parsedRadiusKm && distance > parsedRadiusKm) return null;
         }
-        return data;
+        return toPublicNursery(nursery, distance != null ? { distance } : undefined);
       })
       .filter(Boolean);
 
     if (sort_by === "distance" && parsedLatitude && parsedLongitude) {
-      result.sort((a, b) => (!a.distance ? 1 : !b.distance ? -1 : a.distance - b.distance));
+      result.sort((a, b) => (!a!.distance ? 1 : !b!.distance ? -1 : a!.distance! - b!.distance!));
     }
 
     return {
@@ -182,37 +199,66 @@ export class NurseriesService {
     };
   }
 
+  /** Top-rated active nurseries — used by customer home "Top Nurseries". */
+  async findTopRated(limit = 5, isVerified = true) {
+    const parsedLimit = Math.min(Math.max(Number(limit) || 5, 1), 20);
+    const nurseries = await this.prisma.nursery.findMany({
+      where: {
+        isActive: true,
+        ...(isVerified && { isVerified: true }),
+      },
+      orderBy: [{ ratingAvg: "desc" }, { totalReviews: "desc" }],
+      take: parsedLimit,
+      include: publicNurseryInclude,
+    });
+    return { items: nurseries.map((n) => toPublicNursery(n)) };
+  }
+
   // ─── Find by ID ─────────────────────────────────────────────────────────────
 
-  async findById(id: string) {
-    const nursery = await this.prisma.nursery.findUnique({
-      where: { id },
+  private async loadPublicNurseryDetail(idOrSlug: string) {
+    const nursery = await this.prisma.nursery.findFirst({
+      where: {
+        isActive: true,
+        OR: [{ id: idOrSlug }, { slug: idOrSlug }],
+      },
       include: {
+        ...publicNurseryInclude,
         workingHours: { orderBy: { dayOfWeek: "asc" } },
-        images: { orderBy: { displayOrder: "asc" } },
         serviceAreas: true,
-        vendor: { select: { id: true, fullName: true, email: true, phone: true } },
         _count: { select: { plants: true, orders: true, gardeners: true } },
       },
     });
-    if (!nursery || !nursery.isActive) throw new NotFoundException("Nursery not found");
-    return nursery;
+    if (!nursery) throw new NotFoundException("Nursery not found");
+    const publicCore = toPublicNursery(nursery);
+    return {
+      ...publicCore,
+      slug: nursery.slug,
+      addressLine1: nursery.addressLine1,
+      addressLine2: nursery.addressLine2,
+      city: nursery.city,
+      state: nursery.state,
+      pincode: nursery.pincode,
+      latitude: nursery.latitude != null ? Number(nursery.latitude) : null,
+      longitude: nursery.longitude != null ? Number(nursery.longitude) : null,
+      serviceRadiusKm: nursery.serviceRadiusKm,
+      phone: nursery.phone,
+      email: nursery.email,
+      isVerified: nursery.isVerified,
+      workingHours: nursery.workingHours,
+      serviceAreas: nursery.serviceAreas,
+      _count: nursery._count,
+    };
+  }
+
+  async findById(idOrSlug: string) {
+    return this.loadPublicNurseryDetail(idOrSlug);
   }
 
   // ─── Find by Slug ───────────────────────────────────────────────────────────
 
   async findBySlug(slug: string) {
-    const nursery = await this.prisma.nursery.findUnique({
-      where: { slug },
-      include: {
-        workingHours: { orderBy: { dayOfWeek: "asc" } },
-        images: { orderBy: { displayOrder: "asc" } },
-        serviceAreas: true,
-        _count: { select: { plants: true, orders: true, gardeners: true } },
-      },
-    });
-    if (!nursery || !nursery.isActive) throw new NotFoundException("Nursery not found");
-    return nursery;
+    return this.loadPublicNurseryDetail(slug);
   }
 
   // ─── Get My Nursery ─────────────────────────────────────────────────────────
@@ -238,7 +284,7 @@ export class NurseriesService {
 
   // ─── Update My Nursery ──────────────────────────────────────────────────────
 
-  async updateMyNursery(vendorId: string, updateDto: Partial<CreateNurseryDto>) {
+  async updateMyNursery(vendorId: string, updateDto: UpdateNurseryDto) {
     const nursery = await this.prisma.nursery.findUnique({ where: { vendorId } });
     if (!nursery) throw new NotFoundException("Nursery not found");
 
@@ -271,15 +317,32 @@ export class NurseriesService {
   // ─── Images ─────────────────────────────────────────────────────────────────
 
   async addImages(vendorId: string, addImagesDto: AddNurseryImagesDto) {
-    const nursery = await this.prisma.nursery.findUnique({ where: { vendorId } });
+    const nursery = await this.prisma.nursery.findUnique({
+      where: { vendorId },
+      include: { _count: { select: { images: true } } },
+    });
     if (!nursery) throw new NotFoundException("Nursery not found");
-    return Promise.all(
+
+    const existing = nursery._count.images;
+    const incoming = addImagesDto.images.length;
+    if (existing + incoming > MAX_NURSERY_GALLERY_IMAGES) {
+      throw new BadRequestException(
+        `Gallery limit is ${MAX_NURSERY_GALLERY_IMAGES} images (currently ${existing}, tried to add ${incoming})`
+      );
+    }
+
+    const created = await Promise.all(
       addImagesDto.images.map((img) =>
         this.prisma.nurseryImage.create({
           data: { nurseryId: nursery.id, imageUrl: img.image_url, displayOrder: img.display_order },
         })
       )
     );
+    return created.map((img) => ({
+      id: img.id,
+      imageUrl: img.imageUrl,
+      displayOrder: img.displayOrder,
+    }));
   }
 
   async deleteImage(vendorId: string, imageId: string) {

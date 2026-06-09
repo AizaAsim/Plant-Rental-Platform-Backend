@@ -13,14 +13,17 @@ import { S3Client, PutObjectCommand, DeleteObjectCommand } from "@aws-sdk/client
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import AppConfig from "src/configs/app.config";
 
-const ALLOWED_FOLDERS = new Set(["plants", "nurseries", "profiles", "tasks", "diagnoses"]);
+const ALLOWED_ROOT_FOLDERS = new Set(["plants", "nurseries", "profiles", "tasks", "diagnoses"]);
+const NURSERY_SUBFOLDERS = new Set(["logos", "covers", "gallery"]);
 const IMAGE_MIMES = new Set([
   "image/jpeg",
   "image/png",
   "image/webp",
-  "image/gif",
   "image/jpg",
 ]);
+const NURSERY_IMAGE_MIMES = new Set(["image/jpeg", "image/png", "image/webp", "image/jpg"]);
+const MAX_UPLOAD_BYTES = Number(process.env.MEDIA_MAX_UPLOAD_BYTES ?? 10 * 1024 * 1024);
+const MAX_NURSERY_UPLOAD_BYTES = Number(process.env.MEDIA_NURSERY_MAX_BYTES ?? MAX_UPLOAD_BYTES);
 
 @Injectable()
 export class MediaService {
@@ -51,19 +54,77 @@ export class MediaService {
     );
   }
 
+  private normalizeFolder(folder?: string) {
+    return (folder || "profiles").replace(/\\/g, "/").replace(/^\/+|\/+$/g, "");
+  }
+
   private assertFolder(folder?: string) {
-    const f = folder || "profiles";
-    if (!ALLOWED_FOLDERS.has(f)) {
-      throw new BadRequestException(`Invalid folder. Allowed: ${[...ALLOWED_FOLDERS].join(", ")}`);
+    const f = this.normalizeFolder(folder);
+    const root = f.split("/")[0];
+    if (!ALLOWED_ROOT_FOLDERS.has(root)) {
+      throw new BadRequestException(
+        `Invalid folder. Allowed roots: ${[...ALLOWED_ROOT_FOLDERS].join(", ")} ` +
+          `(nursery uploads: nurseries/logos, nurseries/covers, nurseries/gallery)`
+      );
+    }
+    if (root === "nurseries" && f.includes("/")) {
+      const sub = f.split("/")[1];
+      if (!NURSERY_SUBFOLDERS.has(sub)) {
+        throw new BadRequestException(
+          `Invalid nursery subfolder "${sub}". Use nurseries/logos, nurseries/covers, or nurseries/gallery`
+        );
+      }
     }
     return f;
   }
 
-  private assertImage(mimetype: string) {
+  private assertImage(mimetype: string, folder?: string) {
     const m = (mimetype || "").toLowerCase();
-    if (!IMAGE_MIMES.has(m)) {
-      throw new BadRequestException("Only image uploads are allowed for this endpoint");
+    const root = this.normalizeFolder(folder).split("/")[0];
+    const allowed = root === "nurseries" ? NURSERY_IMAGE_MIMES : IMAGE_MIMES;
+    if (!allowed.has(m)) {
+      throw new BadRequestException(
+        root === "nurseries"
+          ? "Nursery images must be JPEG, PNG, or WebP"
+          : "Only image uploads are allowed for this endpoint"
+      );
     }
+  }
+
+  private assertFileSize(size: number, folder?: string) {
+    const root = this.normalizeFolder(folder).split("/")[0];
+    const max = root === "nurseries" ? MAX_NURSERY_UPLOAD_BYTES : MAX_UPLOAD_BYTES;
+    if (size > max) {
+      throw new BadRequestException(`File exceeds maximum size of ${Math.round(max / (1024 * 1024))}MB`);
+    }
+  }
+
+  private parseResize(resize?: string) {
+    if (!resize?.trim()) return undefined;
+    if (!/^\d{2,4}x\d{2,4}$/.test(resize.trim())) {
+      throw new BadRequestException('resize must be like "512x512" or "1600x900"');
+    }
+    return resize.trim();
+  }
+
+  private buildUploadResponse(
+    key: string,
+    size: number,
+    mimetype: string,
+    storage: "local" | "s3",
+    absoluteUrl: string,
+    resize?: string
+  ) {
+    const path = `/uploads/${key}`;
+    return {
+      url: absoluteUrl,
+      path,
+      key,
+      size,
+      mime_type: mimetype,
+      storage,
+      ...(resize ? { resize_requested: resize } : {}),
+    };
   }
 
   private async ensureDir(dir: string) {
@@ -81,11 +142,13 @@ export class MediaService {
     _userId: string,
     file: { buffer: Buffer; mimetype: string; size: number },
     folder?: string,
-    _resize?: string
+    resize?: string
   ) {
     if (!file) throw new BadRequestException("file is required");
-    this.assertImage(file.mimetype);
     const f = this.assertFolder(folder);
+    this.assertImage(file.mimetype, f);
+    this.assertFileSize(file.size, f);
+    const resizeHint = this.parseResize(resize);
     const key = `${f}/${Date.now()}-${randomUUID()}.${this.extFromMime(file.mimetype)}`;
 
     if (this.s3 && this.bucket) {
@@ -100,27 +163,16 @@ export class MediaService {
       const base =
         AppConfig.AWS.BUCKET_BASE_URL || `https://${this.bucket}.s3.${AppConfig.AWS.REGION}.amazonaws.com`;
       const url = `${base.replace(/\/$/, "")}/${key}`;
-      return {
-        url,
-        key,
-        size: file.size,
-        mime_type: file.mimetype,
-        storage: "s3",
-      };
+      return this.buildUploadResponse(key, file.size, file.mimetype, "s3", url, resizeHint);
     }
 
     const dir = path.join(this.uploadRoot, f);
     await this.ensureDir(dir);
     const diskPath = path.join(this.uploadRoot, key);
     await fs.writeFile(diskPath, file.buffer);
-    const url = `${this.publicBase().replace(/\/$/, "")}/uploads/${key}`;
-    return {
-      url,
-      key,
-      size: file.size,
-      mime_type: file.mimetype,
-      storage: "local",
-    };
+    const pathUrl = `/uploads/${key}`;
+    const absolute = `${this.publicBase().replace(/\/$/, "")}${pathUrl}`;
+    return this.buildUploadResponse(key, file.size, file.mimetype, "local", absolute, resizeHint);
   }
 
   async uploadMultiple(
@@ -138,8 +190,8 @@ export class MediaService {
   }
 
   async presignedUpload(_userId: string, body: { filename: string; content_type: string; folder: string }) {
-    this.assertImage(body.content_type);
     const f = this.assertFolder(body.folder);
+    this.assertImage(body.content_type, f);
     const safeName = path.basename(body.filename).replace(/[^a-zA-Z0-9._-]/g, "_");
     const key = `${f}/${Date.now()}-${randomUUID()}-${safeName}`;
 
