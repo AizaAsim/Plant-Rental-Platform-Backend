@@ -1,14 +1,20 @@
-import { Injectable, Logger } from "@nestjs/common";
+import { BadRequestException, Injectable, Logger } from "@nestjs/common";
 import {
   NotificationType,
   OrderStatus,
   OrderType,
   PaymentStatus,
+  PaymentType,
+  TransactionStatus,
   RentalStatus,
+  OrderPenaltyPayStatus,
 } from "@prisma/client";
+import { Decimal } from "@prisma/client/runtime/library";
 import { PrismaService } from "src/prisma/prisma.service";
 import { contractOk } from "src/common/contract/response";
 import { DomainNotificationsService } from "../notifications/domain-notifications.service";
+
+const PENALTY_SEED_ORDER_NUMBER = "ORD-SEED-1005";
 
 export type ExpireReason = "PAYMENT_TIMEOUT" | "SLOT_SELECTION_EXPIRED" | "PAYMENT_WINDOW_EXPIRED";
 
@@ -248,6 +254,147 @@ export class InternalJobsService {
 
   async autoMatch(body: Record<string, unknown>) {
     return contractOk({ job_id: body.job_id, message: "Auto-match engine not enabled in this build" });
+  }
+
+  /** Insert ORD-SEED-1005 overdue rental + penalty row — no full seed. */
+  async bootstrapPenaltyTestOrder(body: { dry_run?: boolean }) {
+    const dryRun = body.dry_run === true;
+    const customer1 = await this.prisma.user.findUnique({
+      where: { email: "customer1@example.com" },
+      select: { id: true, email: true },
+    });
+    const nursery2 = await this.prisma.nursery.findUnique({
+      where: { slug: "urban-jungle-pk" },
+      select: { id: true, name: true },
+    });
+    const bird = await this.prisma.plant.findFirst({
+      where: { slug: "bird-of-paradise" },
+      select: { id: true, name: true, rentPriceMonthly: true },
+    });
+    const addr = customer1
+      ? await this.prisma.userAddress.findFirst({
+          where: { userId: customer1.id, label: "Home" },
+          select: { id: true },
+        })
+      : null;
+
+    const missing: string[] = [];
+    if (!customer1) missing.push("user customer1@example.com");
+    if (!nursery2) missing.push("nursery slug urban-jungle-pk");
+    if (!bird) missing.push("plant slug bird-of-paradise");
+    if (!addr) missing.push("customer1 Home address");
+
+    const overdueDays = 5;
+    const monthly = Number(bird?.rentPriceMonthly ?? 4000);
+    const daily = (monthly / 30) * 1;
+    const runningTotal = Math.round(daily * overdueDays * 100) / 100;
+
+    if (missing.length > 0) {
+      throw new BadRequestException(
+        `Cannot insert penalty test order. Missing: ${missing.join(", ")}. ` +
+          "Create base data once, or run scripts/insert-penalty-order.cjs after prerequisites exist."
+      );
+    }
+
+    const existing = await this.prisma.order.findUnique({
+      where: { orderNumber: PENALTY_SEED_ORDER_NUMBER },
+      select: { id: true },
+    });
+
+    if (dryRun) {
+      return contractOk({
+        dry_run: true,
+        would_replace_existing: !!existing,
+        order_number: PENALTY_SEED_ORDER_NUMBER,
+        customer_email: customer1!.email,
+        nursery: nursery2!.name,
+        plant: bird!.name,
+        penalty_pkr: runningTotal,
+        overdue_days: overdueDays,
+      });
+    }
+
+    if (existing) {
+      await this.prisma.payment.deleteMany({ where: { orderId: existing.id } });
+      await this.prisma.orderPenalty.deleteMany({ where: { orderId: existing.id } });
+      await this.prisma.order.delete({ where: { id: existing.id } });
+    }
+
+    const daysAgo = (n: number) => {
+      const d = new Date();
+      d.setDate(d.getDate() - n);
+      return d;
+    };
+    const dateOnly = (d: Date) => new Date(d.toISOString().slice(0, 10));
+    const money = (n: number) => new Decimal(n);
+
+    const order = await this.prisma.order.create({
+      data: {
+        orderNumber: PENALTY_SEED_ORDER_NUMBER,
+        userId: customer1!.id,
+        nurseryId: nursery2!.id,
+        deliveryAddressId: addr!.id,
+        orderType: OrderType.RENT,
+        status: OrderStatus.DELIVERED,
+        subtotal: money(4000),
+        deliveryFee: money(200),
+        taxAmount: money(420),
+        discountAmount: money(0),
+        depositAmount: money(2500),
+        totalAmount: money(7120),
+        paymentStatus: PaymentStatus.PAID,
+        paymentMethod: "card",
+        deliveredAt: daysAgo(45),
+        items: {
+          create: {
+            plantId: bird!.id,
+            quantity: 1,
+            orderType: OrderType.RENT,
+            unitPrice: money(4000),
+            depositPerUnit: money(2500),
+            totalPrice: money(4000),
+            rentStartDate: dateOnly(daysAgo(40)),
+            rentEndDate: dateOnly(daysAgo(overdueDays)),
+            rentalStatus: RentalStatus.OVERDUE,
+          },
+        },
+      },
+    });
+
+    await this.prisma.payment.create({
+      data: {
+        orderId: order.id,
+        userId: customer1!.id,
+        amount: money(7120),
+        paymentType: PaymentType.ORDER,
+        paymentMethod: "card",
+        paymentGateway: "stripe",
+        gatewayTransactionId: "pi_seed_overdue_1005",
+        gatewayOrderId: "ord_seed_1005",
+        status: TransactionStatus.SUCCESS,
+      },
+    });
+
+    await this.prisma.orderPenalty.create({
+      data: {
+        orderId: order.id,
+        overdueDays,
+        avgDailyRate: money(Math.round(daily * 100) / 100),
+        penaltyMultiplier: money(1),
+        runningTotal: money(runningTotal),
+        payStatus: OrderPenaltyPayStatus.PENDING,
+      },
+    });
+
+    return contractOk({
+      dry_run: false,
+      order_id: order.id,
+      order_number: PENALTY_SEED_ORDER_NUMBER,
+      penalty_pkr: runningTotal,
+      overdue_days: overdueDays,
+      customer_email: "customer1@example.com",
+      penalty_endpoint: `/api/v1/orders/${PENALTY_SEED_ORDER_NUMBER}/penalty`,
+    });
   }
 
   /** Cron + manual: run unpaid checkout, slot, and payment-window expirers. */

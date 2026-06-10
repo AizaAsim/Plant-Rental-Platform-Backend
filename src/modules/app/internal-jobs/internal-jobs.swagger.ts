@@ -22,6 +22,27 @@ export const internalJobDryRunApiBody: ApiBodyOptions = {
   },
 };
 
+export const bootstrapPenaltyOrderApiBody: ApiBodyOptions = {
+  description:
+    "Inserts ORD-SEED-1005 (overdue rental + penalty) without running prisma db seed. " +
+    "Requires customer1@example.com, urban-jungle-pk nursery, bird-of-paradise plant, and a Home address.",
+  required: false,
+  schema: {
+    type: "object",
+    properties: {
+      dry_run: {
+        type: "boolean",
+        default: false,
+        description: "If true, only reports what would be inserted.",
+      },
+    },
+  },
+  examples: {
+    preview: { summary: "Preview", value: { dry_run: true } },
+    live: { summary: "Insert order", value: { dry_run: false } },
+  },
+};
+
 export const penaltySweepApiBody: ApiBodyOptions = {
   description:
     "Optional. **Runs automatically via daily cron** (`PENALTY_CRON_CRON`, default 01:00). " +

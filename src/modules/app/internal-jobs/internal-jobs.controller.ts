@@ -1,6 +1,7 @@
 import { Body, Controller, Post, UseGuards } from "@nestjs/common";
 import { ApiBearerAuth, ApiBody, ApiOperation, ApiTags } from "@nestjs/swagger";
 import {
+  bootstrapPenaltyOrderApiBody,
   dueRemindersApiBody,
   internalJobDryRunApiBody,
   penaltySweepApiBody,
@@ -86,5 +87,16 @@ export class InternalJobsController {
   @ApiOperation({ summary: "Auto-match (MISS-12) — admin stub" })
   async autoMatch(@Body() body: Record<string, unknown>) {
     return this.svc.autoMatch(body);
+  }
+
+  @Post("seed/penalty-order")
+  @ApiBody(bootstrapPenaltyOrderApiBody)
+  @ApiOperation({
+    summary: "Insert ORD-SEED-1005 penalty test order (no prisma seed)",
+    description:
+      "Admin-only. Writes one overdue rental + order_penalties row. Does not wipe the database.",
+  })
+  async bootstrapPenaltyOrder(@Body() body?: { dry_run?: boolean }) {
+    return this.svc.bootstrapPenaltyTestOrder(body ?? {});
   }
 }

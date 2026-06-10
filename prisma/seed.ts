@@ -13,7 +13,6 @@ import {
   PaymentType,
   TransactionStatus,
   RentalStatus,
-  OrderPenaltyPayStatus,
   ServiceType,
   BookingStatus,
   TaskType,
@@ -38,6 +37,7 @@ import {
 } from "@prisma/client";
 import { Decimal } from "@prisma/client/runtime/library";
 import * as bcrypt from "bcrypt";
+import { purgeSeedScenarios, loadSeedOrderContext, seedSampleOrders } from "./seed-orders";
 
 const prisma = new PrismaClient();
 
@@ -68,465 +68,6 @@ function daysFromNow(n: number): Date {
 
 function dateOnly(d: Date): Date {
   return new Date(d.toISOString().slice(0, 10));
-}
-
-/** Stable order numbers used by curl scripts and manual QA. */
-const SEED_ORDER_NUMBERS = [
-  "ORD-SEED-1001",
-  "ORD-SEED-1002",
-  "ORD-SEED-1003",
-  "ORD-SEED-1004",
-  "ORD-SEED-1005",
-] as const;
-
-/** Matches PenaltyService.computePenaltyForRentLines (monthly rent / 30 × qty × overdue days). */
-function computeSeedPenalty(monthlyRent: number, quantity: number, overdueDays: number) {
-  const daily = (monthlyRent / 30) * quantity;
-  const runningTotal = Math.round(daily * overdueDays * 100) / 100;
-  return {
-    overdueDays,
-    avgDailyRate: money(Math.round(daily * 100) / 100),
-    penaltyMultiplier: money(1),
-    runningTotal: money(runningTotal),
-  };
-}
-
-/** Remove prior seed orders so re-runs do not hit unique constraints on order_number. */
-async function purgeSeedScenarios() {
-  const orders = await prisma.order.findMany({
-    where: { orderNumber: { in: [...SEED_ORDER_NUMBERS] } },
-    select: { id: true },
-  });
-  const orderIds = orders.map((o) => o.id);
-  if (orderIds.length === 0) return;
-
-  const orderItems = await prisma.orderItem.findMany({
-    where: { orderId: { in: orderIds } },
-    select: { id: true },
-  });
-  const orderItemIds = orderItems.map((i) => i.id);
-
-  await prisma.couponUsage.deleteMany({ where: { orderId: { in: orderIds } } });
-  await prisma.vendorEarning.deleteMany({ where: { orderId: { in: orderIds } } });
-  await prisma.payment.deleteMany({ where: { orderId: { in: orderIds } } });
-  await prisma.orderPenalty.deleteMany({ where: { orderId: { in: orderIds } } });
-  await prisma.manualInterventionOrder.deleteMany({ where: { orderId: { in: orderIds } } });
-  await prisma.orderComplaintMessage.deleteMany({
-    where: { complaint: { orderId: { in: orderIds } } },
-  });
-  await prisma.orderComplaint.deleteMany({ where: { orderId: { in: orderIds } } });
-  await prisma.pickupRequest.deleteMany({ where: { orderId: { in: orderIds } } });
-  if (orderItemIds.length > 0) {
-    await prisma.maintenanceVisitLog.deleteMany({ where: { orderItemId: { in: orderItemIds } } });
-    await prisma.maintenanceTask.deleteMany({ where: { orderItemId: { in: orderItemIds } } });
-  }
-  await prisma.freelanceJob.updateMany({
-    where: { orderId: { in: orderIds } },
-    data: { orderId: null },
-  });
-  await prisma.order.deleteMany({ where: { id: { in: orderIds } } });
-}
-
-type SeedOrderContext = {
-  customer1: { id: string };
-  customer2: { id: string };
-  corporate: { id: string };
-  nursery1: { id: string };
-  nursery2: { id: string };
-  addrC1Home: { id: string };
-  addrC1Office: { id: string };
-  addrC2: { id: string };
-  addrCorp: { id: string };
-  monstera: { id: string; rentPriceMonthly: Decimal | null };
-  snakePlant: { id: string; rentPriceMonthly: Decimal | null };
-  pothos: { id: string; rentPriceMonthly: Decimal | null };
-  birdOfParadise: { id: string; rentPriceMonthly: Decimal | null };
-  zzPlant: { id: string };
-  couponRent: { id: string };
-  couponFlat: { id: string };
-};
-
-async function loadSeedOrderContext(): Promise<SeedOrderContext> {
-  const [
-    customer1,
-    customer2,
-    corporate,
-    nursery1,
-    nursery2,
-    monstera,
-    snakePlant,
-    pothos,
-    birdOfParadise,
-    zzPlant,
-    couponRent,
-    couponFlat,
-  ] = await Promise.all([
-    prisma.user.findUniqueOrThrow({ where: { email: "customer1@example.com" } }),
-    prisma.user.findUniqueOrThrow({ where: { email: "customer2@example.com" } }),
-    prisma.user.findUniqueOrThrow({ where: { email: "corporate@acme.pk" } }),
-    prisma.nursery.findUniqueOrThrow({ where: { slug: "green-paradise-nursery" } }),
-    prisma.nursery.findUniqueOrThrow({ where: { slug: "urban-jungle-pk" } }),
-    prisma.plant.findFirstOrThrow({ where: { slug: "monstera-deliciosa" } }),
-    prisma.plant.findFirstOrThrow({ where: { slug: "snake-plant" } }),
-    prisma.plant.findFirstOrThrow({ where: { slug: "golden-pothos" } }),
-    prisma.plant.findFirstOrThrow({ where: { slug: "bird-of-paradise" } }),
-    prisma.plant.findFirstOrThrow({ where: { slug: "zz-plant" } }),
-    prisma.coupon.findFirstOrThrow({ where: { code: "RENT10" } }),
-    prisma.coupon.findFirstOrThrow({ where: { code: "WELCOME500" } }),
-  ]);
-
-  const addrC1Home = await prisma.userAddress.findFirstOrThrow({
-    where: { userId: customer1.id, label: "Home" },
-  });
-  const addrC1Office = await prisma.userAddress.findFirstOrThrow({
-    where: { userId: customer1.id, label: "Office" },
-  });
-  const addrC2 = await prisma.userAddress.findFirstOrThrow({
-    where: { userId: customer2.id, label: "Home" },
-  });
-  const addrCorp = await prisma.userAddress.findFirstOrThrow({
-    where: { userId: corporate.id, label: "HQ" },
-  });
-
-  return {
-    customer1,
-    customer2,
-    corporate,
-    nursery1,
-    nursery2,
-    monstera,
-    snakePlant,
-    pothos,
-    birdOfParadise,
-    zzPlant,
-    couponRent,
-    couponFlat,
-    addrC1Home,
-    addrC1Office,
-    addrC2,
-    addrCorp,
-  };
-}
-
-async function seedSampleOrders(ctx: SeedOrderContext) {
-  const {
-    customer1,
-    customer2,
-    corporate,
-    nursery1,
-    nursery2,
-    addrC1Home,
-    addrC1Office,
-    addrC2,
-    addrCorp,
-    monstera,
-    snakePlant,
-    pothos,
-    birdOfParadise,
-    zzPlant,
-    couponRent,
-    couponFlat,
-  } = ctx;
-
-  const rentStart = dateOnly(daysAgo(30));
-  const rentEnd = dateOnly(daysAgo(1));
-
-  const completedOrder = await prisma.order.create({
-    data: {
-      orderNumber: "ORD-SEED-1001",
-      userId: customer1.id,
-      nurseryId: nursery1.id,
-      deliveryAddressId: addrC1Home.id,
-      orderType: OrderType.RENT,
-      status: OrderStatus.COMPLETED,
-      subtotal: money(2500),
-      deliveryFee: money(200),
-      taxAmount: money(270),
-      discountAmount: money(250),
-      depositAmount: money(1500),
-      totalAmount: money(4720),
-      paymentStatus: PaymentStatus.PAID,
-      paymentMethod: "card",
-      deliveredAt: daysAgo(28),
-      items: {
-        create: {
-          plantId: monstera.id,
-          quantity: 1,
-          orderType: OrderType.RENT,
-          unitPrice: money(2500),
-          depositPerUnit: money(1500),
-          totalPrice: money(2500),
-          rentStartDate: rentStart,
-          rentEndDate: rentEnd,
-          rentalStatus: RentalStatus.RETURNED,
-          actualReturnDate: rentEnd,
-        },
-      },
-    },
-    include: { items: true },
-  });
-
-  const paymentCompleted = await prisma.payment.create({
-    data: {
-      orderId: completedOrder.id,
-      userId: customer1.id,
-      amount: money(4720),
-      paymentType: PaymentType.ORDER,
-      paymentMethod: "card",
-      paymentGateway: "stripe",
-      gatewayTransactionId: "pi_seed_completed_001",
-      gatewayOrderId: "ord_seed_1001",
-      status: TransactionStatus.SUCCESS,
-    },
-  });
-
-  await prisma.couponUsage.create({
-    data: {
-      couponId: couponRent.id,
-      userId: customer1.id,
-      orderId: completedOrder.id,
-      discountApplied: money(250),
-    },
-  });
-
-  await prisma.vendorEarning.create({
-    data: {
-      nurseryId: nursery1.id,
-      orderId: completedOrder.id,
-      orderAmount: money(4720),
-      commissionRate: money(0.1),
-      commissionAmount: money(472),
-      netEarnings: money(4248),
-      status: EarningStatus.PAID,
-    },
-  });
-
-  const deliveredBuyOrder = await prisma.order.create({
-    data: {
-      orderNumber: "ORD-SEED-1002",
-      userId: customer2.id,
-      nurseryId: nursery2.id,
-      deliveryAddressId: addrC2.id,
-      orderType: OrderType.BUY,
-      status: OrderStatus.DELIVERED,
-      subtotal: money(2000),
-      deliveryFee: money(150),
-      taxAmount: money(215),
-      discountAmount: money(0),
-      depositAmount: money(0),
-      totalAmount: money(2365),
-      paymentStatus: PaymentStatus.PAID,
-      paymentMethod: "upi",
-      deliveredAt: daysAgo(3),
-      items: {
-        create: {
-          plantId: zzPlant.id,
-          quantity: 1,
-          orderType: OrderType.BUY,
-          unitPrice: money(2000),
-          totalPrice: money(2000),
-        },
-      },
-    },
-  });
-
-  await prisma.payment.create({
-    data: {
-      orderId: deliveredBuyOrder.id,
-      userId: customer2.id,
-      amount: money(2365),
-      paymentType: PaymentType.ORDER,
-      paymentMethod: "upi",
-      paymentGateway: "razorpay",
-      gatewayTransactionId: "pay_seed_1002",
-      status: TransactionStatus.SUCCESS,
-    },
-  });
-
-  const awaitingPaymentOrder = await prisma.order.create({
-    data: {
-      orderNumber: "ORD-SEED-1003",
-      userId: corporate.id,
-      nurseryId: nursery1.id,
-      deliveryAddressId: addrCorp.id,
-      orderType: OrderType.RENT,
-      status: OrderStatus.AWAITING_PAYMENT,
-      subtotal: money(8000),
-      deliveryFee: money(500),
-      taxAmount: money(850),
-      discountAmount: money(500),
-      depositAmount: money(4000),
-      totalAmount: money(12850),
-      paymentStatus: PaymentStatus.PENDING,
-      items: {
-        create: [
-          {
-            plantId: snakePlant.id,
-            quantity: 4,
-            orderType: OrderType.RENT,
-            unitPrice: money(1200),
-            depositPerUnit: money(800),
-            totalPrice: money(4800),
-            rentStartDate: dateOnly(daysFromNow(7)),
-            rentEndDate: dateOnly(daysFromNow(97)),
-            rentalStatus: RentalStatus.ACTIVE,
-          },
-          {
-            plantId: pothos.id,
-            quantity: 4,
-            orderType: OrderType.RENT,
-            unitPrice: money(800),
-            depositPerUnit: money(400),
-            totalPrice: money(3200),
-            rentStartDate: dateOnly(daysFromNow(7)),
-            rentEndDate: dateOnly(daysFromNow(97)),
-            rentalStatus: RentalStatus.ACTIVE,
-          },
-        ],
-      },
-    },
-  });
-
-  await prisma.couponUsage.create({
-    data: {
-      couponId: couponFlat.id,
-      userId: corporate.id,
-      orderId: awaitingPaymentOrder.id,
-      discountApplied: money(500),
-    },
-  });
-
-  const activeRentalOrder = await prisma.order.create({
-    data: {
-      orderNumber: "ORD-SEED-1004",
-      userId: customer1.id,
-      nurseryId: nursery2.id,
-      deliveryAddressId: addrC1Office.id,
-      orderType: OrderType.RENT,
-      status: OrderStatus.DELIVERED,
-      subtotal: money(4000),
-      deliveryFee: money(300),
-      taxAmount: money(430),
-      discountAmount: money(0),
-      depositAmount: money(2500),
-      totalAmount: money(7230),
-      paymentStatus: PaymentStatus.PAID,
-      paymentMethod: "card",
-      deliveredAt: daysAgo(10),
-      items: {
-        create: {
-          plantId: birdOfParadise.id,
-          quantity: 1,
-          orderType: OrderType.RENT,
-          unitPrice: money(4000),
-          depositPerUnit: money(2500),
-          totalPrice: money(4000),
-          rentStartDate: dateOnly(daysAgo(10)),
-          rentEndDate: dateOnly(daysFromNow(80)),
-          rentalStatus: RentalStatus.ACTIVE,
-        },
-      },
-    },
-    include: { items: true },
-  });
-
-  await prisma.payment.create({
-    data: {
-      orderId: activeRentalOrder.id,
-      userId: customer1.id,
-      amount: money(7230),
-      paymentType: PaymentType.ORDER,
-      paymentMethod: "card",
-      paymentGateway: "stripe",
-      gatewayTransactionId: "pi_seed_active_004",
-      status: TransactionStatus.SUCCESS,
-    },
-  });
-
-  await prisma.rentalExtension.create({
-    data: {
-      orderItemId: activeRentalOrder.items[0].id,
-      originalEndDate: dateOnly(daysFromNow(80)),
-      newEndDate: dateOnly(daysFromNow(110)),
-      extensionPrice: money(900),
-      paymentStatus: PaymentStatus.PENDING,
-    },
-  });
-
-  const overdueDays = 5;
-  const birdMonthlyRent = Number(ctx.birdOfParadise.rentPriceMonthly ?? 4000);
-  const penaltyCalc = computeSeedPenalty(birdMonthlyRent, 1, overdueDays);
-
-  const overdueRentalOrder = await prisma.order.create({
-    data: {
-      orderNumber: "ORD-SEED-1005",
-      userId: customer1.id,
-      nurseryId: nursery2.id,
-      deliveryAddressId: addrC1Home.id,
-      orderType: OrderType.RENT,
-      status: OrderStatus.DELIVERED,
-      subtotal: money(4000),
-      deliveryFee: money(200),
-      taxAmount: money(420),
-      discountAmount: money(0),
-      depositAmount: money(2500),
-      totalAmount: money(7120),
-      paymentStatus: PaymentStatus.PAID,
-      paymentMethod: "card",
-      deliveredAt: daysAgo(45),
-      items: {
-        create: {
-          plantId: birdOfParadise.id,
-          quantity: 1,
-          orderType: OrderType.RENT,
-          unitPrice: money(4000),
-          depositPerUnit: money(2500),
-          totalPrice: money(4000),
-          rentStartDate: dateOnly(daysAgo(40)),
-          rentEndDate: dateOnly(daysAgo(overdueDays)),
-          rentalStatus: RentalStatus.OVERDUE,
-        },
-      },
-    },
-    include: { items: true },
-  });
-
-  await prisma.payment.create({
-    data: {
-      orderId: overdueRentalOrder.id,
-      userId: customer1.id,
-      amount: money(7120),
-      paymentType: PaymentType.ORDER,
-      paymentMethod: "card",
-      paymentGateway: "stripe",
-      gatewayTransactionId: "pi_seed_overdue_1005",
-      gatewayOrderId: "ord_seed_1005",
-      status: TransactionStatus.SUCCESS,
-    },
-  });
-
-  await prisma.orderPenalty.create({
-    data: {
-      orderId: overdueRentalOrder.id,
-      overdueDays: penaltyCalc.overdueDays,
-      avgDailyRate: penaltyCalc.avgDailyRate,
-      penaltyMultiplier: penaltyCalc.penaltyMultiplier,
-      runningTotal: penaltyCalc.runningTotal,
-      payStatus: OrderPenaltyPayStatus.PENDING,
-    },
-  });
-
-  console.log("📦 Orders & payments created");
-
-  return {
-    completedOrder,
-    paymentCompleted,
-    deliveredBuyOrder,
-    awaitingPaymentOrder,
-    activeRentalOrder,
-    overdueRentalOrder,
-    penaltyCalc,
-  };
 }
 
 async function clearDatabase() {
@@ -603,34 +144,42 @@ async function clearDatabase() {
   }
 }
 
+async function assertDatabaseReachable() {
+  try {
+    await prisma.$connect();
+  } catch (err) {
+    const url = process.env.DATABASE_URL ?? "";
+    const host = url.includes("@") ? url.split("@")[1]?.split("/")[0] : "unknown";
+    console.error(`
+❌ Cannot connect to database (${host}).
+
+This is a network/connection issue — not duplicate seed data.
+
+Local dev:
+  docker compose up -d db
+  npx prisma migrate deploy
+  npx prisma db seed
+
+Re-seed penalty/overdue orders only (after full seed once):
+  SEED_MODE=scenarios npx prisma db seed
+
+Production RDS: run seed on ECS/EC2, or uncomment RDS URLs in .env if your IP is allowed.
+`);
+    throw err;
+  }
+}
+
 async function main() {
+  await assertDatabaseReachable();
+
   const seedMode = (process.env.SEED_MODE ?? "full").toLowerCase();
   console.log(`🌱 Plant Rental Platform — seed starting (mode=${seedMode})…`);
-
-  if (seedMode === "scenarios") {
-    await purgeSeedScenarios();
-    console.log("♻️  Removed previous ORD-SEED-1001…1005 data");
-    const ctx = await loadSeedOrderContext();
-    const { overdueRentalOrder, penaltyCalc } = await seedSampleOrders(ctx);
-    console.log(`
-✅ Seed scenarios complete (orders only — no full DB wipe)
-
-📧 Login: customer1@example.com / ${PASSWORD}
-
-📦 ORD-SEED-1005 overdue + penalty
-   Customer: customer1@example.com
-   Penalty: PKR ${Number(penaltyCalc.runningTotal)} (${penaltyCalc.overdueDays} overdue days)
-   GET /api/v1/orders/${overdueRentalOrder.orderNumber}/penalty
-
-Re-run anytime: SEED_MODE=scenarios npx prisma db seed
-`);
-    return;
-  }
 
   await clearDatabase();
   console.log("🗑️  Database cleared");
 
-  const passwordHash = await bcrypt.hash(PASSWORD, 10);
+  const bcryptRounds = Number(process.env.SEED_BCRYPT_ROUNDS ?? 8);
+  const passwordHash = await bcrypt.hash(PASSWORD, bcryptRounds);
 
   // ─── Users ─────────────────────────────────────────────────────────────────
   const admin = await prisma.user.create({
@@ -1343,7 +892,6 @@ Re-run anytime: SEED_MODE=scenarios npx prisma db seed
     where: { id: "singleton" },
     update: {},
     create: {
-    data: {
       id: "singleton",
       autoMatchEnabled: true,
       autoMatchScoreThreshold: money(0.8),
