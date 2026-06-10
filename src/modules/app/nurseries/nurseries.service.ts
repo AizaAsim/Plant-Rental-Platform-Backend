@@ -440,19 +440,24 @@ export class NurseriesService {
   // ─── Get My Nursery ─────────────────────────────────────────────────────────
 
   async getMyNursery(vendorId: string) {
-    const nursery = await this.prisma.nursery.findUnique({
-      where: { vendorId },
-      include: {
-        workingHours: { orderBy: { dayOfWeek: "asc" } },
-        images: { orderBy: { displayOrder: "asc" } },
-        serviceAreas: true,
-        plants: { take: 10, orderBy: { createdAt: "desc" } },
-        gardeners: {
-          include: { user: { select: { id: true, fullName: true, phone: true } } },
+    let nursery;
+    try {
+      nursery = await this.prisma.nursery.findUnique({
+        where: { vendorId },
+        include: {
+          workingHours: { orderBy: { dayOfWeek: "asc" } },
+          images: { orderBy: { displayOrder: "asc" } },
+          serviceAreas: true,
+          plants: { take: 10, orderBy: { createdAt: "desc" } },
+          gardeners: {
+            include: { user: { select: { id: true, fullName: true, phone: true } } },
+          },
+          _count: { select: { plants: true, orders: true, gardeners: true } },
         },
-        _count: { select: { plants: true, orders: true, gardeners: true } },
-      },
-    });
+      });
+    } catch (err) {
+      this.rethrowNurseryDbError(err, "getMyNursery");
+    }
     if (!nursery) throw new NotFoundException("Nursery not found");
     const analytics = await this.getNurseryAnalytics(nursery.id);
     return { ...nursery, analytics };

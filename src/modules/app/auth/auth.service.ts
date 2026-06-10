@@ -525,16 +525,27 @@ export class AuthService {
   }
 
   async getMe(userId: string) {
-    const user = await this.prisma.user.findUnique({
-      where: { id: userId },
-      include: {
-        addresses: {
-          orderBy: { isDefault: "desc" },
+    let user;
+    try {
+      user = await this.prisma.user.findUnique({
+        where: { id: userId },
+        include: {
+          addresses: {
+            orderBy: { isDefault: "desc" },
+          },
+          nursery: true,
+          gardener: true,
         },
-        nursery: true,
-        gardener: true,
-      },
-    });
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (message.includes('profile_picture_url') || message.includes('does not exist')) {
+        throw new BadRequestException(
+          'Server database schema is out of date — restart the API after prisma migrate deploy'
+        );
+      }
+      throw err;
+    }
 
     if (!user) {
       throw new NotFoundException("User not found");
