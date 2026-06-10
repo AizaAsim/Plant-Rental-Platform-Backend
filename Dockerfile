@@ -10,6 +10,8 @@ COPY . .
 
 RUN npm run build
 
+RUN chmod +x scripts/docker-entrypoint.sh
+
 EXPOSE 3002
 
-CMD ["node", "dist/main.js"]
+CMD ["scripts/docker-entrypoint.sh"]

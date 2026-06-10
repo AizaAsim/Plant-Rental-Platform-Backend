@@ -1,11 +1,14 @@
 // src/modules/app/nurseries/nurseries.service.ts
 import {
+  HttpException,
   HttpStatus,
   Injectable,
+  Logger,
   NotFoundException,
   ConflictException,
   BadRequestException,
 } from "@nestjs/common";
+import { PrismaClientKnownRequestError } from "@prisma/client/runtime/library";
 import * as bcrypt from "bcrypt";
 import { UserRole, OrderStatus, ReviewableType } from "@prisma/client";
 import { contractOk, contractFail } from "src/common/contract/response";
@@ -37,10 +40,33 @@ const publicNurseryInclude = {
 
 @Injectable()
 export class NurseriesService {
+  private readonly log = new Logger(NurseriesService.name);
+
   constructor(
     private prisma: PrismaService,
     private media: MediaService
   ) {}
+
+  /** Surface Prisma schema drift (missing migration) instead of a generic 500. */
+  private rethrowNurseryDbError(err: unknown, context: string): never {
+    if (err instanceof PrismaClientKnownRequestError) {
+      if (err.code === "P2021" || err.code === "P2022" || err.code === "P2010") {
+        this.log.error(`Nursery DB schema drift in ${context}: ${err.message}`);
+        throw new HttpException(
+          {
+            success: false,
+            error: {
+              code: "SERVICE_UNAVAILABLE",
+              message:
+                "Nursery catalogue is unavailable — run prisma migrate deploy on the server",
+            },
+          },
+          HttpStatus.SERVICE_UNAVAILABLE
+        );
+      }
+    }
+    throw err;
+  }
 
   // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -239,6 +265,11 @@ export class NurseriesService {
     switch (sortBy) {
       case "name":
         return { name: dir };
+      case "distance":
+        // Distance is computed in memory after fetch; DB order is a stable fallback.
+        return dir === "desc"
+          ? [{ ratingAvg: "desc" }, { totalReviews: "desc" }]
+          : [{ ratingAvg: "asc" }, { totalReviews: "asc" }];
       case "rating":
       default:
         return dir === "desc"
@@ -286,71 +317,94 @@ export class NurseriesService {
     const orderBy = this.buildNurseryOrderBy(String(sort_by), parsedSortOrder);
 
     const skip = (parsedPage - 1) * parsedLimit;
-    const [nurseries, total] = await Promise.all([
-      this.prisma.nursery.findMany({
-        where,
-        orderBy,
-        skip,
-        take: parsedLimit,
-        include: publicNurseryInclude,
-      }),
-      this.prisma.nursery.count({ where }),
-    ]);
+    try {
+      const [nurseries, total] = await Promise.all([
+        this.prisma.nursery.findMany({
+          where,
+          orderBy,
+          skip,
+          take: parsedLimit,
+          include: publicNurseryInclude,
+        }),
+        this.prisma.nursery.count({ where }),
+      ]);
 
-    let result = nurseries
-      .map((nursery) => {
-        let distance: number | undefined;
-        if (parsedLatitude && parsedLongitude && nursery.latitude && nursery.longitude) {
-          distance = this.calculateDistance(
-            parsedLatitude, parsedLongitude,
-            Number(nursery.latitude), Number(nursery.longitude)
-          );
-          if (parsedRadiusKm && distance > parsedRadiusKm) return null;
+      let result = nurseries
+        .map((nursery) => {
+          let distance: number | undefined;
+          if (parsedLatitude && parsedLongitude && nursery.latitude && nursery.longitude) {
+            distance = this.calculateDistance(
+              parsedLatitude, parsedLongitude,
+              Number(nursery.latitude), Number(nursery.longitude)
+            );
+            if (parsedRadiusKm && distance > parsedRadiusKm) return null;
+          }
+          return toPublicNursery(nursery, distance != null ? { distance } : undefined);
+        })
+        .filter((row): row is NonNullable<typeof row> => row != null);
+
+      if (sort_by === "distance" && parsedLatitude && parsedLongitude) {
+        result.sort((a, b) =>
+          a.distance == null ? 1 : b.distance == null ? -1 : a.distance - b.distance
+        );
+        if (parsedSortOrder === "desc") {
+          result.reverse();
         }
-        return toPublicNursery(nursery, distance != null ? { distance } : undefined);
-      })
-      .filter(Boolean);
+      }
 
-    if (sort_by === "distance" && parsedLatitude && parsedLongitude) {
-      result.sort((a, b) => (!a!.distance ? 1 : !b!.distance ? -1 : a!.distance! - b!.distance!));
+      return {
+        items: result,
+        pagination: {
+          page: parsedPage,
+          limit: parsedLimit,
+          total,
+          totalPages: Math.ceil(total / parsedLimit),
+        },
+      };
+    } catch (err) {
+      this.rethrowNurseryDbError(err, "findAllNurseries");
     }
-
-    return {
-      items: result,
-      pagination: { page: parsedPage, limit: parsedLimit, total, totalPages: Math.ceil(total / parsedLimit) },
-    };
   }
 
   /** Top-rated active nurseries — used by customer home "Top Nurseries". */
   async findTopRated(limit = 5, isVerified = true) {
     const parsedLimit = Math.min(Math.max(Number(limit) || 5, 1), 20);
-    const nurseries = await this.prisma.nursery.findMany({
-      where: {
-        isActive: true,
-        ...(isVerified && { isVerified: true }),
-      },
-      orderBy: [{ ratingAvg: "desc" }, { totalReviews: "desc" }],
-      take: parsedLimit,
-      include: publicNurseryInclude,
-    });
-    return { items: nurseries.map((n) => toPublicNursery(n)) };
+    try {
+      const nurseries = await this.prisma.nursery.findMany({
+        where: {
+          isActive: true,
+          ...(isVerified && { isVerified: true }),
+        },
+        orderBy: [{ ratingAvg: "desc" }, { totalReviews: "desc" }],
+        take: parsedLimit,
+        include: publicNurseryInclude,
+      });
+      return { items: nurseries.map((n) => toPublicNursery(n)) };
+    } catch (err) {
+      this.rethrowNurseryDbError(err, "findTopRated");
+    }
   }
 
   // ─── Find by ID ─────────────────────────────────────────────────────────────
 
   private async loadPublicNurseryDetail(idOrSlug: string) {
-    const nursery = await this.prisma.nursery.findFirst({
-      where: {
-        isActive: true,
-        OR: [{ id: idOrSlug }, { slug: idOrSlug }],
-      },
-      include: {
-        ...publicNurseryInclude,
-        workingHours: { orderBy: { dayOfWeek: "asc" } },
-        serviceAreas: true,
-        _count: { select: { plants: true, orders: true, gardeners: true } },
-      },
-    });
+    let nursery;
+    try {
+      nursery = await this.prisma.nursery.findFirst({
+        where: {
+          isActive: true,
+          OR: [{ id: idOrSlug }, { slug: idOrSlug }],
+        },
+        include: {
+          ...publicNurseryInclude,
+          workingHours: { orderBy: { dayOfWeek: "asc" } },
+          serviceAreas: true,
+          _count: { select: { plants: true, orders: true, gardeners: true } },
+        },
+      });
+    } catch (err) {
+      this.rethrowNurseryDbError(err, "loadPublicNurseryDetail");
+    }
     if (!nursery) throw new NotFoundException("Nursery not found");
     const publicCore = toPublicNursery(nursery);
     return {
@@ -870,10 +924,15 @@ export class NurseriesService {
   // ─── Check Serviceability ───────────────────────────────────────────────────
 
   async checkServiceability(nurseryId: string, pincode: string) {
-    const nursery = await this.prisma.nursery.findUnique({
-      where: { id: nurseryId },
-      include: { serviceAreas: true },
-    });
+    let nursery;
+    try {
+      nursery = await this.prisma.nursery.findUnique({
+        where: { id: nurseryId },
+        include: { serviceAreas: true },
+      });
+    } catch (err) {
+      this.rethrowNurseryDbError(err, "checkServiceability");
+    }
     if (!nursery || !nursery.isActive) return { serviceable: false };
     if (nursery.pincode === pincode) return { serviceable: true };
     const serviceable = nursery.serviceAreas.some(
