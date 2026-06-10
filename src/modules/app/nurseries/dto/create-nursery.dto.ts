@@ -8,6 +8,7 @@ import {
   Min,
   Max,
 } from "class-validator";
+import { Transform, Type } from "class-transformer";
 
 export class CreateNurseryDto {
   @ApiProperty({
@@ -18,29 +19,13 @@ export class CreateNurseryDto {
   @IsNotEmpty()
   name: string;
 
-  @ApiPropertyOptional({
+  @ApiProperty({
     example: "A beautiful nursery with a wide variety of plants",
     description: "Nursery description",
   })
-  @IsOptional()
   @IsString()
-  description?: string;
-
-  @ApiPropertyOptional({
-    example: "https://example.com/logo.jpg",
-    description: "Logo URL",
-  })
-  @IsOptional()
-  @IsString()
-  logo_url?: string;
-
-  @ApiPropertyOptional({
-    example: "https://example.com/cover.jpg",
-    description: "Cover image URL",
-  })
-  @IsOptional()
-  @IsString()
-  cover_image_url?: string;
+  @IsNotEmpty()
+  description: string;
 
   @ApiProperty({
     example: "123 Main Street",
@@ -87,6 +72,8 @@ export class CreateNurseryDto {
     description: "Latitude",
   })
   @IsOptional()
+  @Transform(({ value }) => (value === "" || value == null ? undefined : Number(value)))
+  @Type(() => Number)
   @IsNumber()
   latitude?: number;
 
@@ -95,6 +82,8 @@ export class CreateNurseryDto {
     description: "Longitude",
   })
   @IsOptional()
+  @Transform(({ value }) => (value === "" || value == null ? undefined : Number(value)))
+  @Type(() => Number)
   @IsNumber()
   longitude?: number;
 
@@ -104,6 +93,8 @@ export class CreateNurseryDto {
     default: 10,
   })
   @IsOptional()
+  @Transform(({ value }) => (value === "" || value == null ? undefined : Number(value)))
+  @Type(() => Number)
   @IsNumber()
   @Min(1)
   @Max(100)

@@ -418,8 +418,9 @@ model Nursery {
   name            String
   slug            String   @unique
   description     String?  @db.Text
-  logoUrl         String?  @map("logo_url")
-  coverImageUrl   String?  @map("cover_image_url")
+  logoUrl            String?  @map("logo_url")
+  coverImageUrl      String?  @map("cover_image_url")
+  profilePictureUrl  String?  @map("profile_picture_url")
   addressLine1    String   @map("address_line1")
   addressLine2    String?  @map("address_line2")
   city            String

@@ -1,18 +1,25 @@
 // src/modules/app/nurseries/nurseries.controller.ts
 import {
+  BadRequestException,
   Controller,
   Get,
   Post,
   Put,
+  Patch,
   Delete,
   Query,
   Param,
   Body,
   UseGuards,
+  UseInterceptors,
+  UsePipes,
+  UploadedFiles,
+  ValidationPipe,
   Request,
   HttpCode,
   HttpStatus,
 } from "@nestjs/common";
+import { FileFieldsInterceptor, FilesInterceptor } from "@nestjs/platform-express";
 import {
   ApiTags,
   ApiOperation,
@@ -20,6 +27,8 @@ import {
   ApiParam,
   ApiBearerAuth,
   ApiQuery,
+  ApiConsumes,
+  ApiBody,
 } from "@nestjs/swagger";
 import { NurseriesService } from "./nurseries.service";
 import { CreateNurseryDto } from "./dto/create-nursery.dto";
@@ -27,11 +36,27 @@ import { UpdateNurseryDto } from "./dto/update-nursery.dto";
 import { NurseryListResponseDto, NurseryPublicDto } from "./dto/nursery-public.dto";
 import { UpdateWorkingHoursDto } from "./dto/working-hours.dto";
 import { UpdateServiceAreasDto } from "./dto/service-areas.dto";
-import { AddNurseryImagesDto } from "./dto/nursery-images.dto";
+import {
+  NurseryMediaResponseDto,
+  ReorderNurseryGalleryDto,
+} from "./dto/nursery-media.dto";
+import {
+  MAX_NURSERY_GALLERY_IMAGES,
+  NURSERY_CREATE_FILE_FIELDS,
+  NURSERY_MEDIA_PATCH_FIELDS,
+  NurseryUploadedFiles,
+  nurseryImageMulter,
+} from "./nursery-media.constants";
 import { JwtAuthGuard } from "../auth/guard/jwt-auth.guard";
 import { RolesGuard } from "../auth/guard/roles.guard";
 import { Roles } from "../auth/decorators/roles.decorator";
 import { UserRole } from "@prisma/client";
+
+const nurseryMultipartPipe = new ValidationPipe({
+  transform: true,
+  whitelist: true,
+  forbidNonWhitelisted: true,
+});
 
 @ApiTags("Nurseries")
 @Controller("api/v1/nurseries")
@@ -45,11 +70,45 @@ export class NurseriesController {
   @Roles(UserRole.VENDOR)
   @ApiBearerAuth("bearer")
   @HttpCode(HttpStatus.CREATED)
-  @ApiOperation({ summary: "Create nursery profile (for vendors)" })
-  @ApiResponse({ status: 201, description: "Nursery created successfully" })
+  @UseInterceptors(FileFieldsInterceptor([...NURSERY_CREATE_FILE_FIELDS], nurseryImageMulter))
+  @UsePipes(nurseryMultipartPipe)
+  @ApiConsumes("multipart/form-data")
+  @ApiBody({
+    schema: {
+      type: "object",
+      required: ["name", "description", "address_line1", "city", "state", "pincode", "phone", "cover_image", "profile_picture"],
+      properties: {
+        name: { type: "string" },
+        description: { type: "string" },
+        address_line1: { type: "string" },
+        address_line2: { type: "string" },
+        city: { type: "string" },
+        state: { type: "string" },
+        pincode: { type: "string" },
+        latitude: { type: "number" },
+        longitude: { type: "number" },
+        phone: { type: "string" },
+        email: { type: "string" },
+        cover_image: { type: "string", format: "binary" },
+        profile_picture: { type: "string", format: "binary" },
+        logo: { type: "string", format: "binary" },
+        gallery_images: { type: "array", items: { type: "string", format: "binary" } },
+      },
+    },
+  })
+  @ApiOperation({
+    summary: "Create nursery profile with media (multipart)",
+    description:
+      "Submit nursery fields and image files in one request. `cover_image` and `profile_picture` are required; `logo` and `gallery_images` are optional.",
+  })
+  @ApiResponse({ status: 201, description: "Nursery created successfully", type: NurseryMediaResponseDto })
   @ApiResponse({ status: 409, description: "Vendor already has a nursery" })
-  async createNursery(@Request() req, @Body() createDto: CreateNurseryDto) {
-    return this.nurseriesService.createNursery(req.user.id, createDto);
+  async createNursery(
+    @Request() req,
+    @Body() createDto: CreateNurseryDto,
+    @UploadedFiles() files: NurseryUploadedFiles
+  ) {
+    return this.nurseriesService.createNursery(req.user.id, createDto, files ?? {});
   }
 
   // ─── Vendor: my-nursery static routes (BEFORE /:nursery_id) ────────────────
@@ -70,9 +129,8 @@ export class NurseriesController {
   @Roles(UserRole.VENDOR)
   @ApiBearerAuth("bearer")
   @ApiOperation({
-    summary: "Update nursery profile",
-    description:
-      "All fields optional. Use `logo_url` and `cover_image_url` with paths from POST /media/upload (field `path`).",
+    summary: "Update nursery profile (text fields only)",
+    description: "Update nursery details. Use PATCH /my-nursery/media for image changes.",
   })
   @ApiResponse({ status: 200, description: "Nursery updated successfully" })
   async updateMyNursery(
@@ -82,27 +140,95 @@ export class NurseriesController {
     return this.nurseriesService.updateMyNursery(req.user.id, updateDto);
   }
 
-  @Post("my-nursery/images")
+  @Patch("my-nursery/media")
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(UserRole.VENDOR)
   @ApiBearerAuth("bearer")
-  @HttpCode(HttpStatus.CREATED)
-  @ApiOperation({ summary: "Add nursery images" })
-  @ApiResponse({ status: 201, description: "Images added successfully" })
-  async addImages(@Request() req, @Body() addImagesDto: AddNurseryImagesDto) {
-    return this.nurseriesService.addImages(req.user.id, addImagesDto);
+  @UseInterceptors(FileFieldsInterceptor([...NURSERY_MEDIA_PATCH_FIELDS], nurseryImageMulter))
+  @ApiConsumes("multipart/form-data")
+  @ApiBody({
+    schema: {
+      type: "object",
+      properties: {
+        cover_image: { type: "string", format: "binary" },
+        profile_picture: { type: "string", format: "binary" },
+        logo: { type: "string", format: "binary" },
+        gallery_images: { type: "array", items: { type: "string", format: "binary" } },
+      },
+    },
+  })
+  @ApiOperation({
+    summary: "Replace or add nursery media",
+    description:
+      "Send only files being changed. Cover and profile picture can be replaced but not removed without a replacement file.",
+  })
+  @ApiResponse({ status: 200, type: NurseryMediaResponseDto })
+  async patchNurseryMedia(
+    @Request() req,
+    @UploadedFiles() files: NurseryUploadedFiles
+  ) {
+    return this.nurseriesService.patchNurseryMedia(req.user.id, files ?? {});
   }
 
-  @Delete("my-nursery/images/:image_id")
+  @Delete("my-nursery/media/logo")
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(UserRole.VENDOR)
   @ApiBearerAuth("bearer")
   @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: "Remove nursery image" })
-  @ApiParam({ name: "image_id", description: "Image ID" })
-  @ApiResponse({ status: 200, description: "Image removed successfully" })
-  async deleteImage(@Request() req, @Param("image_id") imageId: string) {
-    return this.nurseriesService.deleteImage(req.user.id, imageId);
+  @ApiOperation({ summary: "Remove optional nursery logo" })
+  @ApiResponse({ status: 200, type: NurseryMediaResponseDto })
+  async deleteNurseryLogo(@Request() req) {
+    return this.nurseriesService.deleteNurseryLogo(req.user.id);
+  }
+
+  @Post("my-nursery/media/gallery")
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.VENDOR)
+  @ApiBearerAuth("bearer")
+  @HttpCode(HttpStatus.CREATED)
+  @UseInterceptors(FilesInterceptor("gallery_images", MAX_NURSERY_GALLERY_IMAGES, nurseryImageMulter))
+  @ApiConsumes("multipart/form-data")
+  @ApiBody({
+    schema: {
+      type: "object",
+      required: ["gallery_images"],
+      properties: {
+        gallery_images: { type: "array", items: { type: "string", format: "binary" } },
+      },
+    },
+  })
+  @ApiOperation({ summary: "Add gallery images" })
+  @ApiResponse({ status: 201, type: NurseryMediaResponseDto })
+  async addGalleryImages(
+    @Request() req,
+    @UploadedFiles() files: { buffer: Buffer; mimetype: string; size: number }[] | undefined
+  ) {
+    if (!files?.length) {
+      throw new BadRequestException("gallery_images is required");
+    }
+    return this.nurseriesService.addGalleryImages(req.user.id, files);
+  }
+
+  @Put("my-nursery/media/gallery/order")
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.VENDOR)
+  @ApiBearerAuth("bearer")
+  @ApiOperation({ summary: "Reorder gallery images" })
+  @ApiResponse({ status: 200, type: NurseryMediaResponseDto })
+  async reorderGalleryImages(@Request() req, @Body() body: ReorderNurseryGalleryDto) {
+    return this.nurseriesService.reorderGalleryImages(req.user.id, body);
+  }
+
+  @Delete("my-nursery/media/gallery/:image_id")
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.VENDOR)
+  @ApiBearerAuth("bearer")
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: "Delete a gallery image" })
+  @ApiParam({ name: "image_id", description: "Gallery image ID" })
+  @ApiResponse({ status: 200, type: NurseryMediaResponseDto })
+  async deleteGalleryImage(@Request() req, @Param("image_id") imageId: string) {
+    return this.nurseriesService.deleteGalleryImage(req.user.id, imageId);
   }
 
   @Put("my-nursery/working-hours")

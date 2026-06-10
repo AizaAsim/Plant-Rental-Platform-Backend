@@ -15,6 +15,7 @@ import AppConfig from "src/configs/app.config";
 
 const ALLOWED_ROOT_FOLDERS = new Set(["plants", "nurseries", "profiles", "tasks", "diagnoses"]);
 const NURSERY_SUBFOLDERS = new Set(["logos", "covers", "gallery"]);
+const NURSERY_MEDIA_SLOTS = new Set(["cover", "profile", "logo", "gallery"]);
 const IMAGE_MIMES = new Set([
   "image/jpeg",
   "image/png",
@@ -187,6 +188,86 @@ export class MediaService {
       results.push(await this.uploadFile(_userId, file, folder, resize));
     }
     return results;
+  }
+
+  /** Storage key: nurseries/{nurseryId}/{slot}/{timestamp-uuid}.ext */
+  async uploadNurseryImage(
+    nurseryId: string,
+    slot: string,
+    file: { buffer: Buffer; mimetype: string; size: number }
+  ) {
+    if (!file?.buffer?.length) throw new BadRequestException(`${slot} file is required`);
+    const normalizedSlot = slot.trim().toLowerCase();
+    if (!NURSERY_MEDIA_SLOTS.has(normalizedSlot)) {
+      throw new BadRequestException(`Invalid nursery media slot "${slot}"`);
+    }
+    this.assertImage(file.mimetype, "nurseries");
+    this.assertFileSize(file.size, "nurseries");
+    const key = `nurseries/${nurseryId}/${normalizedSlot}/${Date.now()}-${randomUUID()}.${this.extFromMime(file.mimetype)}`;
+    return this.persistUpload(key, file);
+  }
+
+  private async persistUpload(
+    key: string,
+    file: { buffer: Buffer; mimetype: string; size: number },
+    resizeHint?: string
+  ) {
+    if (this.s3 && this.bucket) {
+      await this.s3.send(
+        new PutObjectCommand({
+          Bucket: this.bucket,
+          Key: key,
+          Body: file.buffer,
+          ContentType: file.mimetype,
+        })
+      );
+      const base =
+        AppConfig.AWS.BUCKET_BASE_URL || `https://${this.bucket}.s3.${AppConfig.AWS.REGION}.amazonaws.com`;
+      const url = `${base.replace(/\/$/, "")}/${key}`;
+      return this.buildUploadResponse(key, file.size, file.mimetype, "s3", url, resizeHint);
+    }
+
+    const dir = path.join(this.uploadRoot, path.dirname(key));
+    await this.ensureDir(dir);
+    const diskPath = path.join(this.uploadRoot, key);
+    await fs.writeFile(diskPath, file.buffer);
+    const pathUrl = `/uploads/${key}`;
+    const absolute = `${this.publicBase().replace(/\/$/, "")}${pathUrl}`;
+    return this.buildUploadResponse(key, file.size, file.mimetype, "local", absolute, resizeHint);
+  }
+
+  extractStorageKey(storedUrl: string | null | undefined): string | null {
+    if (!storedUrl?.trim()) return null;
+    const value = storedUrl.trim();
+    const uploadsIdx = value.indexOf("/uploads/");
+    if (uploadsIdx >= 0) {
+      return value.slice(uploadsIdx + "/uploads/".length).split("?")[0];
+    }
+    const match = value.match(/nurseries\/[a-f0-9-]{36}\/(cover|profile|logo|gallery)\/[^?#]+/i);
+    return match ? match[0] : null;
+  }
+
+  /** Delete a stored nursery (or other) asset by public URL or /uploads path. */
+  async deleteStoredAsset(storedUrl: string | null | undefined): Promise<void> {
+    const key = this.extractStorageKey(storedUrl);
+    if (!key) return;
+
+    if (this.s3 && this.bucket) {
+      try {
+        await this.s3.send(new DeleteObjectCommand({ Bucket: this.bucket, Key: key }));
+      } catch {
+        /* best-effort cleanup */
+      }
+      return;
+    }
+
+    const diskPath = this.resolveLocalKey(key);
+    try {
+      await fs.unlink(diskPath);
+    } catch (e: unknown) {
+      const err = e as { code?: string };
+      if (err?.code !== "ENOENT") throw e;
+    }
   }
 
   async presignedUpload(_userId: string, body: { filename: string; content_type: string; folder: string }) {

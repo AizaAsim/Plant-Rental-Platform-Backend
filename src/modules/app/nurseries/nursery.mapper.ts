@@ -13,6 +13,7 @@ type NurseryRow = {
   description?: string | null;
   logoUrl?: string | null;
   coverImageUrl?: string | null;
+  profilePictureUrl?: string | null;
   ratingAvg: Decimal | number | string;
   totalReviews: number;
   city?: string;
@@ -31,17 +32,36 @@ export function mapNurseryImages(images: NurseryImageRow[] | undefined) {
     }));
 }
 
+export function resolveThumbnailUrl(nursery: NurseryRow, orderedImages?: NurseryImageRow[]) {
+  const gallery = orderedImages ?? nursery.images ?? [];
+  const firstGallery = gallery.slice().sort((a, b) => a.displayOrder - b.displayOrder)[0];
+  return firstGallery?.imageUrl ?? nursery.coverImageUrl ?? null;
+}
+
+export function toNurseryMediaResponse(nursery: NurseryRow) {
+  const images = mapNurseryImages(nursery.images);
+  return {
+    coverImageUrl: nursery.coverImageUrl!,
+    profilePictureUrl: nursery.profilePictureUrl!,
+    logoUrl: nursery.logoUrl ?? null,
+    images,
+  };
+}
+
 export function toPublicNursery(nursery: NurseryRow, extra?: { distance?: number }) {
+  const images = mapNurseryImages(nursery.images);
   return {
     id: nursery.id,
     name: nursery.name,
     ...(nursery.slug != null && { slug: nursery.slug }),
     description: nursery.description ?? null,
-    logoUrl: nursery.logoUrl ?? null,
     coverImageUrl: nursery.coverImageUrl ?? null,
+    profilePictureUrl: nursery.profilePictureUrl ?? null,
+    thumbnailUrl: resolveThumbnailUrl(nursery, nursery.images),
+    logoUrl: nursery.logoUrl ?? null,
     ratingAvg: String(nursery.ratingAvg ?? "0"),
     totalReviews: nursery.totalReviews ?? 0,
-    images: mapNurseryImages(nursery.images),
+    images,
     ...(nursery.city != null && { city: nursery.city }),
     ...(nursery.isVerified != null && { isVerified: nursery.isVerified }),
     ...(extra?.distance != null && { distance: extra.distance }),

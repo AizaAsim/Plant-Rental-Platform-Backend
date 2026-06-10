@@ -18,14 +18,18 @@ import {
 import { CreateNurseryDto } from "./dto/create-nursery.dto";
 import { UpdateWorkingHoursDto } from "./dto/working-hours.dto";
 import { UpdateServiceAreasDto } from "./dto/service-areas.dto";
-import { AddNurseryImagesDto } from "./dto/nursery-images.dto";
+import { ReorderNurseryGalleryDto } from "./dto/nursery-media.dto";
 import { UpdateNurseryDto } from "./dto/update-nursery.dto";
 import { Prisma, PrismaPromise } from "@prisma/client";
 import { Decimal } from "@prisma/client/runtime/library";
 import { PrismaService } from "src/prisma/prisma.service";
-import { toPublicNursery } from "./nursery.mapper";
-
-const MAX_NURSERY_GALLERY_IMAGES = 20;
+import { MediaService } from "../media/media.service";
+import { toPublicNursery, toNurseryMediaResponse } from "./nursery.mapper";
+import {
+  MAX_NURSERY_GALLERY_IMAGES,
+  NurseryUploadedFiles,
+  UploadFileMeta,
+} from "./nursery-media.constants";
 
 const publicNurseryInclude = {
   images: { orderBy: { displayOrder: "asc" as const } },
@@ -33,7 +37,10 @@ const publicNurseryInclude = {
 
 @Injectable()
 export class NurseriesService {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private media: MediaService
+  ) {}
 
   // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -79,34 +86,149 @@ export class NurseriesService {
 
   // ─── Create Nursery ─────────────────────────────────────────────────────────
 
-  async createNursery(vendorId: string, createDto: CreateNurseryDto) {
+  private async getVendorNurseryOrThrow(vendorId: string) {
+    const nursery = await this.prisma.nursery.findUnique({ where: { vendorId } });
+    if (!nursery) throw new NotFoundException("Nursery not found");
+    return nursery;
+  }
+
+  private nurseryIncludeWithImages = {
+    images: { orderBy: { displayOrder: "asc" as const } },
+  };
+
+  private async loadNurseryMedia(nurseryId: string) {
+    const nursery = await this.prisma.nursery.findUnique({
+      where: { id: nurseryId },
+      include: this.nurseryIncludeWithImages,
+    });
+    if (!nursery) throw new NotFoundException("Nursery not found");
+    return toNurseryMediaResponse(nursery);
+  }
+
+  private async cleanupUploadedKeys(keys: string[]) {
+    for (const key of keys) {
+      await this.media.deleteStoredAsset(`/uploads/${key}`);
+    }
+  }
+
+  private async uploadNurseryFiles(
+    nurseryId: string,
+    files: Partial<Record<"cover" | "profile" | "logo" | "gallery", UploadFileMeta[]>>
+  ) {
+    const uploadedKeys: string[] = [];
+    const result: {
+      coverUrl?: string;
+      profileUrl?: string;
+      logoUrl?: string;
+      galleryUrls: string[];
+    } = { galleryUrls: [] };
+
+    try {
+      if (files.cover?.length) {
+        const { url, key } = await this.media.uploadNurseryImage(nurseryId, "cover", files.cover[0]);
+        uploadedKeys.push(key);
+        result.coverUrl = url;
+      }
+      if (files.profile?.length) {
+        const { url, key } = await this.media.uploadNurseryImage(nurseryId, "profile", files.profile[0]);
+        uploadedKeys.push(key);
+        result.profileUrl = url;
+      }
+      if (files.logo?.length) {
+        const { url, key } = await this.media.uploadNurseryImage(nurseryId, "logo", files.logo[0]);
+        uploadedKeys.push(key);
+        result.logoUrl = url;
+      }
+      if (files.gallery?.length) {
+        for (const file of files.gallery) {
+          const { url, key } = await this.media.uploadNurseryImage(nurseryId, "gallery", file);
+          uploadedKeys.push(key);
+          result.galleryUrls.push(url);
+        }
+      }
+      return { ...result, uploadedKeys };
+    } catch (error) {
+      await this.cleanupUploadedKeys(uploadedKeys);
+      throw error;
+    }
+  }
+
+  async createNursery(
+    vendorId: string,
+    createDto: CreateNurseryDto,
+    uploadedFiles: NurseryUploadedFiles
+  ) {
     const existingNursery = await this.prisma.nursery.findUnique({ where: { vendorId } });
     if (existingNursery) throw new ConflictException("Vendor already has a nursery");
 
+    const coverFile = uploadedFiles.cover_image?.[0];
+    const profileFile = uploadedFiles.profile_picture?.[0];
+    if (!coverFile) throw new BadRequestException("cover_image is required");
+    if (!profileFile) throw new BadRequestException("profile_picture is required");
+
+    const galleryFiles = uploadedFiles.gallery_images ?? [];
+    if (galleryFiles.length > MAX_NURSERY_GALLERY_IMAGES) {
+      throw new BadRequestException(`Gallery limit is ${MAX_NURSERY_GALLERY_IMAGES} images`);
+    }
+
     const slug = await this.ensureUniqueSlug(this.generateSlug(createDto.name));
 
-    return this.prisma.nursery.create({
+    const nursery = await this.prisma.nursery.create({
       data: {
         vendorId,
         name: createDto.name,
         slug,
         description: createDto.description,
-        logoUrl: createDto.logo_url,
-        coverImageUrl: createDto.cover_image_url,
         addressLine1: createDto.address_line1,
         addressLine2: createDto.address_line2,
         city: createDto.city,
         state: createDto.state,
         pincode: createDto.pincode,
-        latitude: createDto.latitude ? new Decimal(createDto.latitude) : null,
-        longitude: createDto.longitude ? new Decimal(createDto.longitude) : null,
+        latitude: createDto.latitude != null ? new Decimal(createDto.latitude) : null,
+        longitude: createDto.longitude != null ? new Decimal(createDto.longitude) : null,
         serviceRadiusKm: createDto.service_radius_km || 10,
         phone: createDto.phone,
         email: createDto.email,
         isVerified: false,
       },
-      include: { workingHours: true, images: true, serviceAreas: true },
     });
+
+    let uploadedKeys: string[] = [];
+    try {
+      const uploads = await this.uploadNurseryFiles(nursery.id, {
+        cover: [coverFile],
+        profile: [profileFile],
+        logo: uploadedFiles.logo,
+        gallery: galleryFiles,
+      });
+      uploadedKeys = uploads.uploadedKeys;
+
+      await this.prisma.$transaction(async (tx) => {
+        await tx.nursery.update({
+          where: { id: nursery.id },
+          data: {
+            coverImageUrl: uploads.coverUrl,
+            profilePictureUrl: uploads.profileUrl,
+            logoUrl: uploads.logoUrl ?? null,
+          },
+        });
+        if (uploads.galleryUrls.length) {
+          await tx.nurseryImage.createMany({
+            data: uploads.galleryUrls.map((imageUrl, index) => ({
+              nurseryId: nursery.id,
+              imageUrl,
+              displayOrder: index,
+            })),
+          });
+        }
+      });
+    } catch (error) {
+      await this.cleanupUploadedKeys(uploadedKeys);
+      await this.prisma.nursery.delete({ where: { id: nursery.id } }).catch(() => undefined);
+      throw error;
+    }
+
+    return this.loadNurseryMedia(nursery.id);
   }
 
   private buildNurseryOrderBy(
@@ -294,8 +416,6 @@ export class NurseriesService {
       updateData.slug = await this.ensureUniqueSlug(this.generateSlug(updateDto.name), nursery.id);
     }
     if (updateDto.description !== undefined) updateData.description = updateDto.description;
-    if (updateDto.logo_url !== undefined) updateData.logoUrl = updateDto.logo_url;
-    if (updateDto.cover_image_url !== undefined) updateData.coverImageUrl = updateDto.cover_image_url;
     if (updateDto.address_line1 !== undefined) updateData.addressLine1 = updateDto.address_line1;
     if (updateDto.address_line2 !== undefined) updateData.addressLine2 = updateDto.address_line2;
     if (updateDto.city !== undefined) updateData.city = updateDto.city;
@@ -314,46 +434,175 @@ export class NurseriesService {
     });
   }
 
-  // ─── Images ─────────────────────────────────────────────────────────────────
+  // ─── Nursery media (multipart) ──────────────────────────────────────────────
 
-  async addImages(vendorId: string, addImagesDto: AddNurseryImagesDto) {
-    const nursery = await this.prisma.nursery.findUnique({
-      where: { vendorId },
-      include: { _count: { select: { images: true } } },
+  async patchNurseryMedia(vendorId: string, uploadedFiles: NurseryUploadedFiles) {
+    const nursery = await this.getVendorNurseryOrThrow(vendorId);
+    const coverFile = uploadedFiles.cover_image?.[0];
+    const profileFile = uploadedFiles.profile_picture?.[0];
+    const logoFile = uploadedFiles.logo?.[0];
+    const galleryFiles = uploadedFiles.gallery_images ?? [];
+
+    if (!coverFile && !profileFile && !logoFile && !galleryFiles.length) {
+      throw new BadRequestException("Provide at least one media file to update");
+    }
+
+    if (galleryFiles.length) {
+      const existing = await this.prisma.nurseryImage.count({ where: { nurseryId: nursery.id } });
+      if (existing + galleryFiles.length > MAX_NURSERY_GALLERY_IMAGES) {
+        throw new BadRequestException(
+          `Gallery limit is ${MAX_NURSERY_GALLERY_IMAGES} images (currently ${existing}, tried to add ${galleryFiles.length})`
+        );
+      }
+    }
+
+    const oldAssets: string[] = [];
+    if (coverFile && nursery.coverImageUrl) oldAssets.push(nursery.coverImageUrl);
+    if (profileFile && nursery.profilePictureUrl) oldAssets.push(nursery.profilePictureUrl);
+    if (logoFile && nursery.logoUrl) oldAssets.push(nursery.logoUrl);
+
+    const uploads = await this.uploadNurseryFiles(nursery.id, {
+      cover: coverFile ? [coverFile] : undefined,
+      profile: profileFile ? [profileFile] : undefined,
+      logo: logoFile ? [logoFile] : undefined,
+      gallery: galleryFiles.length ? galleryFiles : undefined,
     });
-    if (!nursery) throw new NotFoundException("Nursery not found");
 
-    const existing = nursery._count.images;
-    const incoming = addImagesDto.images.length;
-    if (existing + incoming > MAX_NURSERY_GALLERY_IMAGES) {
+    try {
+      await this.prisma.$transaction(async (tx) => {
+        const nurseryUpdate: Prisma.NurseryUpdateInput = {};
+        if (uploads.coverUrl) nurseryUpdate.coverImageUrl = uploads.coverUrl;
+        if (uploads.profileUrl) nurseryUpdate.profilePictureUrl = uploads.profileUrl;
+        if (uploads.logoUrl) nurseryUpdate.logoUrl = uploads.logoUrl;
+
+        if (Object.keys(nurseryUpdate).length) {
+          await tx.nursery.update({ where: { id: nursery.id }, data: nurseryUpdate });
+        }
+
+        if (uploads.galleryUrls.length) {
+          const last = await tx.nurseryImage.findFirst({
+            where: { nurseryId: nursery.id },
+            orderBy: { displayOrder: "desc" },
+            select: { displayOrder: true },
+          });
+          const baseOrder = (last?.displayOrder ?? -1) + 1;
+          await tx.nurseryImage.createMany({
+            data: uploads.galleryUrls.map((imageUrl, index) => ({
+              nurseryId: nursery.id,
+              imageUrl,
+              displayOrder: baseOrder + index,
+            })),
+          });
+        }
+      });
+    } catch (error) {
+      await this.cleanupUploadedKeys(uploads.uploadedKeys);
+      throw error;
+    }
+
+    for (const asset of oldAssets) {
+      await this.media.deleteStoredAsset(asset);
+    }
+
+    return this.loadNurseryMedia(nursery.id);
+  }
+
+  async deleteNurseryLogo(vendorId: string) {
+    const nursery = await this.getVendorNurseryOrThrow(vendorId);
+    if (!nursery.logoUrl) {
+      return this.loadNurseryMedia(nursery.id);
+    }
+
+    const previousLogo = nursery.logoUrl;
+    await this.prisma.nursery.update({
+      where: { id: nursery.id },
+      data: { logoUrl: null },
+    });
+    await this.media.deleteStoredAsset(previousLogo);
+    return this.loadNurseryMedia(nursery.id);
+  }
+
+  async addGalleryImages(vendorId: string, files: UploadFileMeta[]) {
+    if (!files.length) throw new BadRequestException("gallery_images is required");
+    const nursery = await this.getVendorNurseryOrThrow(vendorId);
+
+    const existing = await this.prisma.nurseryImage.count({ where: { nurseryId: nursery.id } });
+    if (existing + files.length > MAX_NURSERY_GALLERY_IMAGES) {
       throw new BadRequestException(
-        `Gallery limit is ${MAX_NURSERY_GALLERY_IMAGES} images (currently ${existing}, tried to add ${incoming})`
+        `Gallery limit is ${MAX_NURSERY_GALLERY_IMAGES} images (currently ${existing}, tried to add ${files.length})`
       );
     }
 
-    const created = await Promise.all(
-      addImagesDto.images.map((img) =>
-        this.prisma.nurseryImage.create({
-          data: { nurseryId: nursery.id, imageUrl: img.image_url, displayOrder: img.display_order },
-        })
-      )
-    );
-    return created.map((img) => ({
-      id: img.id,
-      imageUrl: img.imageUrl,
-      displayOrder: img.displayOrder,
-    }));
+    const uploads = await this.uploadNurseryFiles(nursery.id, { gallery: files });
+
+    try {
+      await this.prisma.$transaction(async (tx) => {
+        const last = await tx.nurseryImage.findFirst({
+          where: { nurseryId: nursery.id },
+          orderBy: { displayOrder: "desc" },
+          select: { displayOrder: true },
+        });
+        const baseOrder = (last?.displayOrder ?? -1) + 1;
+        await tx.nurseryImage.createMany({
+          data: uploads.galleryUrls.map((imageUrl, index) => ({
+            nurseryId: nursery.id,
+            imageUrl,
+            displayOrder: baseOrder + index,
+          })),
+        });
+      });
+    } catch (error) {
+      await this.cleanupUploadedKeys(uploads.uploadedKeys);
+      throw error;
+    }
+
+    return this.loadNurseryMedia(nursery.id);
   }
 
-  async deleteImage(vendorId: string, imageId: string) {
-    const nursery = await this.prisma.nursery.findUnique({ where: { vendorId } });
-    if (!nursery) throw new NotFoundException("Nursery not found");
+  async deleteGalleryImage(vendorId: string, imageId: string) {
+    const nursery = await this.getVendorNurseryOrThrow(vendorId);
     const image = await this.prisma.nurseryImage.findFirst({
       where: { id: imageId, nurseryId: nursery.id },
     });
     if (!image) throw new NotFoundException("Image not found");
+
     await this.prisma.nurseryImage.delete({ where: { id: imageId } });
-    return { message: "Image deleted successfully" };
+    await this.media.deleteStoredAsset(image.imageUrl);
+    return this.loadNurseryMedia(nursery.id);
+  }
+
+  async reorderGalleryImages(vendorId: string, dto: ReorderNurseryGalleryDto) {
+    const nursery = await this.getVendorNurseryOrThrow(vendorId);
+    const ids = dto.images.map((item) => item.image_id);
+    const uniqueIds = new Set(ids);
+    if (uniqueIds.size !== ids.length) {
+      throw new BadRequestException("image_id values must be unique");
+    }
+
+    const existing = await this.prisma.nurseryImage.findMany({
+      where: { nurseryId: nursery.id },
+      select: { id: true },
+    });
+    if (existing.length !== ids.length) {
+      throw new BadRequestException("images must include every gallery image for this nursery");
+    }
+    const existingIds = new Set(existing.map((img) => img.id));
+    for (const id of ids) {
+      if (!existingIds.has(id)) {
+        throw new BadRequestException(`Gallery image not found: ${id}`);
+      }
+    }
+
+    await this.prisma.$transaction(
+      dto.images.map((item) =>
+        this.prisma.nurseryImage.update({
+          where: { id: item.image_id },
+          data: { displayOrder: item.display_order },
+        })
+      )
+    );
+
+    return this.loadNurseryMedia(nursery.id);
   }
 
   // ─── Working Hours ──────────────────────────────────────────────────────────

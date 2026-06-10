@@ -28,7 +28,7 @@ const CANONICAL_FLOW: VendorOnboardingFlowStep[] = [
     title: "Nursery (vendor) profile",
     description: "Create storefront profile and keep it updated.",
     endpoints: [
-      { method: "POST", path: "/api/v1/nurseries", notes: "create once per vendor" },
+      { method: "POST", path: "/api/v1/nurseries", notes: "multipart — create once per vendor; cover_image + profile_picture required" },
       { method: "GET", path: "/api/v1/nurseries/my-nursery" },
       { method: "PUT", path: "/api/v1/nurseries/my-nursery" },
     ],
@@ -60,8 +60,11 @@ const CANONICAL_FLOW: VendorOnboardingFlowStep[] = [
     title: "Nursery images",
     description: "Gallery / branding assets.",
     endpoints: [
-      { method: "POST", path: "/api/v1/nurseries/my-nursery/images" },
-      { method: "DELETE", path: "/api/v1/nurseries/my-nursery/images/:image_id" },
+      { method: "PATCH", path: "/api/v1/nurseries/my-nursery/media", notes: "multipart — replace cover/profile/logo or add gallery" },
+      { method: "DELETE", path: "/api/v1/nurseries/my-nursery/media/logo" },
+      { method: "POST", path: "/api/v1/nurseries/my-nursery/media/gallery", notes: "multipart gallery_images" },
+      { method: "DELETE", path: "/api/v1/nurseries/my-nursery/media/gallery/:image_id" },
+      { method: "PUT", path: "/api/v1/nurseries/my-nursery/media/gallery/order" },
     ],
   },
   {
@@ -228,7 +231,7 @@ export class VendorOnboardingService {
     if (!c.staff_team_configured)
       return "Optional: add staff — POST /api/v1/nurseries/my-nursery/gardeners";
     if (!c.gallery_images)
-      return "Optional: gallery — POST /api/v1/nurseries/my-nursery/images";
+      return "Optional: gallery — POST /api/v1/nurseries/my-nursery/media/gallery";
     return null;
   }
 }

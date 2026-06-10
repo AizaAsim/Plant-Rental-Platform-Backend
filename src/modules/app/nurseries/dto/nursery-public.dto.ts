@@ -25,11 +25,20 @@ export class NurseryPublicDto {
   @ApiPropertyOptional({ example: "Indoor and outdoor plant nursery." })
   description?: string | null;
 
-  @ApiPropertyOptional({ example: "/uploads/nurseries/logos/logo.jpg" })
-  logoUrl?: string | null;
+  @ApiProperty({ example: "https://cdn.example.com/nurseries/nursery-uuid/cover/cover.jpg" })
+  coverImageUrl: string | null;
 
-  @ApiPropertyOptional({ example: "/uploads/nurseries/covers/cover.jpg" })
-  coverImageUrl?: string | null;
+  @ApiProperty({ example: "https://cdn.example.com/nurseries/nursery-uuid/profile/profile.jpg" })
+  profilePictureUrl: string | null;
+
+  @ApiPropertyOptional({
+    example: "https://cdn.example.com/nurseries/nursery-uuid/cover/cover.jpg",
+    description: "List card thumbnail; falls back to coverImageUrl when unset",
+  })
+  thumbnailUrl?: string | null;
+
+  @ApiPropertyOptional({ example: "/uploads/nurseries/logos/logo.jpg", nullable: true })
+  logoUrl?: string | null;
 
   @ApiProperty({ example: "4.8" })
   ratingAvg: string;
