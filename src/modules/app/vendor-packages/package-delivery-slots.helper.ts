@@ -77,9 +77,9 @@ export function validateAndNormalizeDeliverySlots(raw: unknown): PackageDelivery
     }
     const r = row as Record<string, unknown>;
 
-    if (r.day_of_week != null && r.date == null) {
+    if ((r.day_of_week != null || r.day != null) && r.date == null) {
       throw new BadRequestException(
-        `delivery_slots[${idx}]: use date (YYYY-MM-DD) instead of day_of_week. ` +
+        `delivery_slots[${idx}]: use date (YYYY-MM-DD) instead of day/day_of_week. ` +
           "Package delivery windows are date-specific, not recurring weekly."
       );
     }
@@ -282,7 +282,8 @@ function findLegacyWeeklySlot(
   const dow = date.getUTCDay();
   return (packageDeliverySlots as Record<string, unknown>[]).some((row) => {
     if (row.date != null) return false;
-    if (row.day_of_week != null && Number(row.day_of_week) !== dow) return false;
+    const legacyDow = row.day_of_week ?? row.day;
+    if (legacyDow != null && Number(legacyDow) !== dow) return false;
     if (row.time_from && normTime(String(row.time_from)) !== normTime(timeSlot.time_from)) {
       return false;
     }
