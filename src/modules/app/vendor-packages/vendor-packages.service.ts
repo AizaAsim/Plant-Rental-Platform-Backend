@@ -10,6 +10,12 @@ import type {
   CreateVendorPackageDto,
   VendorPackagePlantLineDto,
 } from "./dto/vendor-package.dto";
+import {
+  enrichSlotsWithAvailability,
+  filterFutureDeliverySlots,
+  parseStoredDeliverySlots,
+  validateAndNormalizeDeliverySlots,
+} from "./package-delivery-slots.helper";
 
 type PackageWithPlants = VendorPackage & {
   plants: (VendorPackagePlant & {
@@ -189,6 +195,11 @@ export class VendorPackagesService {
     };
   }
 
+  private formatDeliverySlotsForResponse(raw: unknown) {
+    const parsed = parseStoredDeliverySlots(raw);
+    return filterFutureDeliverySlots(parsed);
+  }
+
   private toDto(row: PackageWithPlants) {
     return {
       package_id: row.publicId,
@@ -204,7 +215,7 @@ export class VendorPackagesService {
       allows_installments: row.allowsInstallments,
       installment_options: row.installmentOptions,
       add_ons: row.addOns,
-      delivery_slots: row.deliverySlots,
+      delivery_slots: this.formatDeliverySlotsForResponse(row.deliverySlots),
       plants: row.plants.map((pp) => this.plantLineDto(pp)),
       is_active: row.isActive,
       created_at: row.createdAt.toISOString(),
@@ -234,6 +245,10 @@ export class VendorPackagesService {
   async create(vendorId: string, body: CreateVendorPackageDto) {
     const nursery = await this.nurseryForVendor(vendorId);
     const plantLines = this.normalizePlantLines(body);
+    const deliverySlots =
+      body.delivery_slots != null
+        ? validateAndNormalizeDeliverySlots(body.delivery_slots)
+        : undefined;
 
     const row = await this.prisma.vendorPackage.create({
       data: {
@@ -253,7 +268,7 @@ export class VendorPackagesService {
           body.installment_options != null ? (body.installment_options as Prisma.InputJsonValue) : undefined,
         addOns: body.add_ons != null ? (body.add_ons as Prisma.InputJsonValue) : undefined,
         deliverySlots:
-          body.delivery_slots != null ? (body.delivery_slots as Prisma.InputJsonValue) : undefined,
+          deliverySlots != null ? (deliverySlots as unknown as Prisma.InputJsonValue) : undefined,
         isActive: body.is_active !== false,
       },
     });
@@ -303,6 +318,10 @@ export class VendorPackagesService {
     const plantLines = this.normalizePlantLines(
       body as unknown as { plants?: VendorPackagePlantLineDto[]; plant_ids?: string[] }
     );
+    const deliverySlots =
+      body.delivery_slots !== undefined
+        ? validateAndNormalizeDeliverySlots(body.delivery_slots)
+        : undefined;
 
     const row = await this.prisma.vendorPackage.update({
       where: { id: existing.id },
@@ -325,8 +344,8 @@ export class VendorPackagesService {
           installmentOptions: body.installment_options as Prisma.InputJsonValue,
         }),
         ...(body.add_ons !== undefined && { addOns: body.add_ons as Prisma.InputJsonValue }),
-        ...(body.delivery_slots !== undefined && {
-          deliverySlots: body.delivery_slots as Prisma.InputJsonValue,
+        ...(deliverySlots !== undefined && {
+          deliverySlots: deliverySlots as unknown as Prisma.InputJsonValue,
         }),
         ...(body.is_active !== undefined && { isActive: Boolean(body.is_active) }),
       },
@@ -466,6 +485,52 @@ export class VendorPackagesService {
         stock_status,
       })),
     });
+    } catch (err) {
+      if (err && typeof err === "object" && "getStatus" in err) throw err;
+      this.rethrowCatalogueError(err, nurseryRef);
+    }
+  }
+
+  /** Customer booking: dated slots with remaining capacity (past dates omitted). */
+  async listAvailableDeliverySlots(nurseryRef: string, packageRef: string) {
+    try {
+      const nursery = await this.resolveActiveNursery(nurseryRef);
+      if (!nursery) {
+        throw contractFail(
+          ContractErrorCode.RESOURCE_NOT_FOUND,
+          "Nursery not found",
+          HttpStatus.NOT_FOUND
+        );
+      }
+
+      const pkg = await this.prisma.vendorPackage.findFirst({
+        where: {
+          nurseryId: nursery.id,
+          isActive: true,
+          OR: [{ id: packageRef }, { publicId: packageRef }],
+        },
+        select: { id: true, publicId: true, deliverySlots: true },
+      });
+      if (!pkg) {
+        throw contractFail(
+          ContractErrorCode.RESOURCE_NOT_FOUND,
+          "Package not found",
+          HttpStatus.NOT_FOUND
+        );
+      }
+
+      const slots = parseStoredDeliverySlots(pkg.deliverySlots);
+      const delivery_slots = await enrichSlotsWithAvailability(
+        this.prisma,
+        pkg.id,
+        slots
+      );
+
+      return contractOk({
+        package_id: pkg.publicId,
+        nursery_id: nursery.id,
+        delivery_slots,
+      });
     } catch (err) {
       if (err && typeof err === "object" && "getStatus" in err) throw err;
       this.rethrowCatalogueError(err, nurseryRef);

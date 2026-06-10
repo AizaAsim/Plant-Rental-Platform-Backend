@@ -38,11 +38,8 @@ import {
 import { PenaltyService } from "./penalty.service";
 import { PickupFlowService } from "./pickup-flow.service";
 import { enrichOrderForClient } from "./order-ui.contract";
-import {
-  assertSlotAllowedByPackage,
-  buildConfirmedDeliveryMeta,
-  parsePreferredTimeSlot,
-} from "./order-delivery-slot.helper";
+import { buildConfirmedDeliveryMeta, parsePreferredTimeSlot } from "./order-delivery-slot.helper";
+import { assertDeliverySlotBookable } from "../vendor-packages/package-delivery-slots.helper";
 import {
   computeRentalOrderPricing,
   pricingToOrderAmounts,
@@ -2124,7 +2121,16 @@ export class OrdersService {
           "preferred_time_slot is required when preferred_delivery_date is set on the booking"
         );
       }
-      assertSlotAllowedByPackage(String(prefDate), parsed, pkg?.deliverySlots);
+      if (order.vendorPackageId) {
+        await assertDeliverySlotBookable(
+          this.prisma,
+          order.vendorPackageId,
+          String(prefDate),
+          parsed,
+          pkg?.deliverySlots,
+          order.id
+        );
+      }
       const existingWf =
         order.workflowMeta && typeof order.workflowMeta === "object"
           ? (order.workflowMeta as Record<string, unknown>)
@@ -2569,7 +2575,13 @@ export class OrdersService {
     if (body.preferred_delivery_date && body.preferred_time_slot) {
       const parsed = parsePreferredTimeSlot(body.preferred_time_slot);
       if (parsed) {
-        assertSlotAllowedByPackage(String(body.preferred_delivery_date), parsed, pkg.deliverySlots);
+        await assertDeliverySlotBookable(
+          this.prisma,
+          pkg.id,
+          String(body.preferred_delivery_date),
+          parsed,
+          pkg.deliverySlots
+        );
       }
     }
 

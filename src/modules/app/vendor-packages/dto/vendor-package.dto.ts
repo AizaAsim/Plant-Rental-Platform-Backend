@@ -2,15 +2,40 @@ import { ApiProperty, ApiPropertyOptional } from "@nestjs/swagger";
 import {
   IsArray,
   IsBoolean,
+  IsInt,
   IsNumber,
   IsOptional,
   IsString,
+  Matches,
   Min,
   MinLength,
   ValidateNested,
   IsUUID,
 } from "class-validator";
 import { Type } from "class-transformer";
+
+export class VendorPackageDeliverySlotDto {
+  @ApiProperty({ example: "2026-06-15", description: "Calendar date (YYYY-MM-DD), not day_of_week" })
+  @IsString()
+  @Matches(/^\d{4}-\d{2}-\d{2}$/, { message: "date must be YYYY-MM-DD" })
+  date: string;
+
+  @ApiProperty({ example: "09:00" })
+  @IsString()
+  @Matches(/^([01]\d|2[0-3]):[0-5]\d$/, { message: "time_from must be HH:MM" })
+  time_from: string;
+
+  @ApiProperty({ example: "12:00" })
+  @IsString()
+  @Matches(/^([01]\d|2[0-3]):[0-5]\d$/, { message: "time_to must be HH:MM" })
+  time_to: string;
+
+  @ApiProperty({ example: 5, minimum: 1 })
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  capacity: number;
+}
 
 export class VendorPackagePlantLineDto {
   @ApiProperty({ example: "00000000-0000-4000-8000-000000000001" })
@@ -92,12 +117,14 @@ export class CreateVendorPackageDto {
   add_ons?: Record<string, unknown>;
 
   @ApiPropertyOptional({
-    description: "Delivery capacity slots (day_of_week, time_from, time_to, capacity)",
-    type: "array",
-    items: { type: "object" },
+    description: "Date-specific delivery capacity slots (date, time_from, time_to, capacity)",
+    type: [VendorPackageDeliverySlotDto],
   })
   @IsOptional()
-  delivery_slots?: Record<string, unknown>[];
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => VendorPackageDeliverySlotDto)
+  delivery_slots?: VendorPackageDeliverySlotDto[];
 
   @ApiPropertyOptional({
     type: [VendorPackagePlantLineDto],
@@ -194,9 +221,12 @@ export class UpdateVendorPackageDto {
   @IsOptional()
   add_ons?: Record<string, unknown>;
 
-  @ApiPropertyOptional({ type: "array", items: { type: "object" } })
+  @ApiPropertyOptional({ type: [VendorPackageDeliverySlotDto] })
   @IsOptional()
-  delivery_slots?: Record<string, unknown>[];
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => VendorPackageDeliverySlotDto)
+  delivery_slots?: VendorPackageDeliverySlotDto[];
 
   @ApiPropertyOptional({ type: [VendorPackagePlantLineDto] })
   @IsOptional()

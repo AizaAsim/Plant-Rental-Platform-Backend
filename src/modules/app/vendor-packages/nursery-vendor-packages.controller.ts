@@ -34,4 +34,20 @@ export class NurseryVendorPackagesController {
     const include = includeOutOfStock === "true";
     return this.vendorPackagesService.listAvailablePlantsForPackage(nurseryId, packageId, include);
   }
+
+  @Get(":nursery_id/packages/:package_id/available-delivery-slots")
+  @ApiOperation({
+    summary: "List bookable delivery dates/times for a package (with capacity)",
+    description:
+      "Returns date-specific slots only (YYYY-MM-DD). Past dates are omitted. " +
+      "Each slot includes booked_count, remaining_capacity, and is_full.",
+  })
+  @ApiParam({ name: "nursery_id", description: "Nursery UUID or slug" })
+  @ApiParam({ name: "package_id", description: "Package public id or UUID" })
+  listAvailableDeliverySlots(
+    @Param("nursery_id") nurseryId: string,
+    @Param("package_id") packageId: string
+  ) {
+    return this.vendorPackagesService.listAvailableDeliverySlots(nurseryId, packageId);
+  }
 }

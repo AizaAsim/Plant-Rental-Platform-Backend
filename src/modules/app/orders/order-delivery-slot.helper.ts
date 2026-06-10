@@ -15,44 +15,6 @@ export function parsePreferredTimeSlot(raw: unknown): ParsedTimeSlot | null {
   return { time_from: s, time_to: s };
 }
 
-type PackageSlotRow = {
-  day_of_week?: number;
-  time_from?: string;
-  time_to?: string;
-};
-
-function normTime(t: string) {
-  return t.trim().slice(0, 5);
-}
-
-/** Validate customer-selected date/time against package `delivery_slots` JSON (if configured). */
-export function assertSlotAllowedByPackage(
-  preferredDate: string,
-  timeSlot: ParsedTimeSlot,
-  packageDeliverySlots: unknown
-) {
-  if (!packageDeliverySlots) return;
-  if (!Array.isArray(packageDeliverySlots) || packageDeliverySlots.length === 0) return;
-
-  const date = new Date(preferredDate);
-  if (Number.isNaN(date.getTime())) {
-    throw new BadRequestException("Invalid preferred_delivery_date");
-  }
-  const dow = date.getUTCDay();
-  const rows = packageDeliverySlots as PackageSlotRow[];
-  const match = rows.some((row) => {
-    if (row.day_of_week != null && row.day_of_week !== dow) return false;
-    if (row.time_from && normTime(row.time_from) !== normTime(timeSlot.time_from)) return false;
-    if (row.time_to && normTime(row.time_to) !== normTime(timeSlot.time_to)) return false;
-    return true;
-  });
-  if (!match) {
-    throw new BadRequestException(
-      "Selected delivery date/time is not available for this package. Choose a slot from the package delivery schedule."
-    );
-  }
-}
-
 export function buildConfirmedDeliveryMeta(
   preferredDate: string,
   timeSlot: ParsedTimeSlot,
