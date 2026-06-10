@@ -17,6 +17,7 @@ import {
   RecipientType,
   EarningStatus,
   EarningType,
+  NotificationType,
 } from "@prisma/client";
 import { PrismaService } from "src/prisma/prisma.service";
 import { IdempotencyService } from "src/common/contract/idempotency.service";
@@ -494,6 +495,17 @@ export class PaymentsService {
           },
         });
       }
+
+      if (payment.order.nurseryId) {
+        await this.domainNotifications.notifyVendorByNurseryId(
+          payment.order.nurseryId,
+          "Payment received",
+          `Payment for order ${payment.order.orderNumber ?? payment.orderId} was successful.`,
+          NotificationType.PAYMENT,
+          "ORDER",
+          payment.orderId
+        );
+      }
     }
 
     if (payment.freelanceJobId && payment.freelanceJob) {
@@ -599,7 +611,7 @@ export class PaymentsService {
       );
     }
 
-    const out = {
+    const out: Record<string, unknown> = {
       success: true,
       verified: true,
       mock: true,
@@ -607,6 +619,12 @@ export class PaymentsService {
       status: TransactionStatus.SUCCESS,
       message: "Mock verify succeeded for all inputs",
     };
+    if (payment.paymentType === PaymentType.ORDER && payment.orderId) {
+      out.order = {
+        status: OrderStatus.CONFIRMED,
+        payment_status: PaymentStatus.PAID,
+      };
+    }
     if (idempotencyKey) {
       await this.idempotency.save(idempotencyKey, route, userId, body, 200, out);
     }

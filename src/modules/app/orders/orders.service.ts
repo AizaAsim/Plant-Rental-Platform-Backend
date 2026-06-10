@@ -38,6 +38,17 @@ import {
 import { PenaltyService } from "./penalty.service";
 import { PickupFlowService } from "./pickup-flow.service";
 import { enrichOrderForClient } from "./order-ui.contract";
+import {
+  assertSlotAllowedByPackage,
+  buildConfirmedDeliveryMeta,
+  parsePreferredTimeSlot,
+} from "./order-delivery-slot.helper";
+import {
+  computeRentalOrderPricing,
+  pricingToOrderAmounts,
+  sumAddOnTotal,
+  type RentalPricingBreakdown,
+} from "./order-pricing.helper";
 
 const VENDOR_REJECT_REASON_MIN_LEN = 3;
 const VENDOR_REJECT_REASON_MAX_LEN = 2000;
@@ -780,9 +791,12 @@ export class OrdersService {
 
   // GET /api/v1/orders/{order_id}
   async getOrderById(userId: string, orderId: string) {
+    const oid = await resolveOrderId(this.prisma, orderId);
+    if (!oid) throw new NotFoundException("Order not found");
+
     const order = await this.prisma.order.findFirst({
       where: {
-        id: orderId,
+        id: oid,
         userId,
       },
       include: {
@@ -817,6 +831,51 @@ export class OrdersService {
 
     if (!order) {
       throw new NotFoundException("Order not found");
+    }
+
+    if (order.orderType === OrderType.RENT || order.orderType === OrderType.MIXED) {
+      const pkg = order.vendorPackageId
+        ? await this.prisma.vendorPackage.findUnique({
+            where: { id: order.vendorPackageId },
+            select: { name: true, tier: true, rentalDurationDays: true, publicId: true },
+          })
+        : null;
+      const meta =
+        order.bookingMeta && typeof order.bookingMeta === "object"
+          ? (order.bookingMeta as Record<string, unknown>)
+          : {};
+      const windowHours = Number(process.env.ORDER_CUSTOMER_CANCEL_WINDOW_HOURS ?? 8) || 8;
+      return {
+        ...order,
+        ...enrichOrderForClient(
+          {
+            id: order.id,
+            orderNumber: order.orderNumber,
+            status: order.status,
+            paymentStatus: order.paymentStatus,
+            createdAt: order.createdAt,
+            vendorApprovalSelections: order.vendorApprovalSelections,
+          },
+          windowHours
+        ),
+        approval_status:
+          order.status === OrderStatus.PENDING
+            ? "PENDING"
+            : order.status === OrderStatus.CANCELLED
+              ? "REJECTED"
+              : "APPROVED",
+        payment_status: order.paymentStatus,
+        package_summary: pkg
+          ? {
+              name: pkg.name,
+              tier: pkg.tier,
+              rental_duration_days: pkg.rentalDurationDays,
+              package_id: pkg.publicId,
+            }
+          : null,
+        add_ons: meta.add_ons ?? {},
+        pricing: this.buildPricingFromOrder(order),
+      };
     }
 
     return order;
@@ -913,7 +972,7 @@ export class OrdersService {
 
   /** POST /api/v1/orders/{order_id}/cancel */
   async cancelOrder(userId: string, orderIdOrNum: string, cancelDto: any) {
-    const { reason } = cancelDto ?? {};
+    const reason = cancelDto?.reason ?? cancelDto?.cancellation_reason;
 
     const oid = await resolveOrderId(this.prisma, orderIdOrNum);
     if (!oid) throw new NotFoundException("Order not found");
@@ -1010,7 +1069,19 @@ export class OrdersService {
       });
     }
 
+    if (order.nurseryId) {
+      await this.domainNotifications.notifyVendorByNurseryId(
+        order.nurseryId,
+        "Booking cancelled",
+        `Customer cancelled order ${order.orderNumber}.`,
+        NotificationType.ORDER,
+        "ORDER",
+        order.id
+      );
+    }
+
     return Object.assign(updated, {
+      vendor_request_order: false,
       cancellation_policy: {
         window_hours: Number(process.env.ORDER_CUSTOMER_CANCEL_WINDOW_HOURS ?? 8) || 8,
         applied_via_time_window: canCancelWithinWindow,
@@ -1110,7 +1181,12 @@ export class OrdersService {
     ]);
 
     return {
-      items: orders,
+      items: orders.map((o) => ({
+        ...o,
+        vendor_request_order: o.status === OrderStatus.PENDING,
+        approval_status: o.status === OrderStatus.PENDING ? "PENDING" : "APPROVED",
+        payment_status: o.paymentStatus,
+      })),
       pagination: {
         page: pageNum,
         limit: limitNum,
@@ -1130,9 +1206,12 @@ export class OrdersService {
       throw new NotFoundException("Nursery not found");
     }
 
+    const oid = await resolveOrderId(this.prisma, orderId);
+    if (!oid) throw new NotFoundException("Order not found");
+
     const order = await this.prisma.order.findFirst({
       where: {
-        id: orderId,
+        id: oid,
         nurseryId: nursery.id,
       },
       include: {
@@ -1155,6 +1234,16 @@ export class OrdersService {
         payments: {
           orderBy: { createdAt: "desc" },
         },
+        vendorPackage: {
+          select: {
+            id: true,
+            publicId: true,
+            name: true,
+            tier: true,
+            rentalDurationDays: true,
+            includesMaintenance: true,
+          },
+        },
       },
     });
 
@@ -1162,7 +1251,7 @@ export class OrdersService {
       throw new NotFoundException("Order not found");
     }
 
-    return order;
+    return this.enrichVendorOrderDetail(order, vendorId);
   }
 
   // PUT /api/v1/vendor/orders/{order_id}/status
@@ -1340,7 +1429,21 @@ export class OrdersService {
       });
     }
 
-    return updated;
+    await this.prisma.notification.create({
+      data: {
+        userId: order.userId,
+        title: "Order rejected",
+        message: `Your order ${order.orderNumber} was rejected by the nursery.${reason ? ` Reason: ${reason}` : ""}`,
+        type: NotificationType.ORDER,
+        referenceType: "ORDER",
+        referenceId: order.id,
+      },
+    });
+
+    return Object.assign(updated, {
+      vendor_request_order: false,
+      approval_status: "REJECTED",
+    });
   }
 
   // POST /api/v1/vendor/orders/{order_id}/assign-gardener
@@ -1392,6 +1495,18 @@ export class OrdersService {
 
     if (!order) {
       throw new NotFoundException("Order not found");
+    }
+
+    if (order.vendorPackageId) {
+      const pkg = await this.prisma.vendorPackage.findUnique({
+        where: { id: order.vendorPackageId },
+        select: { includesMaintenance: true, name: true },
+      });
+      if (pkg && !pkg.includesMaintenance) {
+        throw new BadRequestException(
+          "This package does not include maintenance (maintenance_enabled=false). Gardener assignment with maintenance schedule is not allowed."
+        );
+      }
     }
 
     this.assertOrderPaid(order, "assign-gardener");
@@ -1836,6 +1951,92 @@ export class OrdersService {
     };
   }
 
+  private buildPricingFromOrder(order: {
+    subtotal: Decimal;
+    deliveryFee: Decimal;
+    taxAmount: Decimal;
+    depositAmount: Decimal;
+    totalAmount: Decimal;
+    bookingMeta?: unknown;
+  }) {
+    const meta =
+      order.bookingMeta && typeof order.bookingMeta === "object"
+        ? (order.bookingMeta as Record<string, unknown>)
+        : {};
+    if (meta.pricing && typeof meta.pricing === "object") {
+      const p = meta.pricing as RentalPricingBreakdown;
+      const out: Record<string, number> = {
+        package_amount: p.package_amount,
+        add_on_total: p.add_on_total,
+        total_amount: p.total_amount ?? Number(order.totalAmount),
+      };
+      if (p.delivery_fee > 0) out.delivery_fee = p.delivery_fee;
+      if (p.tax_amount > 0) out.tax_amount = p.tax_amount;
+      if (p.deposit_amount > 0) out.deposit_amount = p.deposit_amount;
+      return out;
+    }
+    const addOnTotal = Number(sumAddOnTotal(meta.add_ons));
+    const packageAmount = Number(order.subtotal) - addOnTotal;
+    const out: Record<string, number> = {
+      package_amount: packageAmount,
+      add_on_total: addOnTotal,
+      total_amount: Number(order.totalAmount),
+    };
+    if (Number(order.deliveryFee) > 0) out.delivery_fee = Number(order.deliveryFee);
+    if (Number(order.taxAmount) > 0) out.tax_amount = Number(order.taxAmount);
+    if (Number(order.depositAmount) > 0) out.deposit_amount = Number(order.depositAmount);
+    return out;
+  }
+
+  private enrichVendorOrderDetail(
+    order: {
+      id: string;
+      orderNumber: string;
+      status: OrderStatus;
+      paymentStatus: PaymentStatus;
+      cancelledBy: string | null;
+      bookingMeta: unknown;
+      subtotal: Decimal;
+      deliveryFee: Decimal;
+      taxAmount: Decimal;
+      depositAmount: Decimal;
+      totalAmount: Decimal;
+      vendorPackage?: {
+        name: string;
+        tier: string | null;
+        rentalDurationDays: number;
+      } | null;
+    } & Record<string, unknown>,
+    vendorId: string
+  ) {
+    const meta =
+      order.bookingMeta && typeof order.bookingMeta === "object"
+        ? (order.bookingMeta as Record<string, unknown>)
+        : {};
+    const approvalStatus =
+      order.status === OrderStatus.PENDING
+        ? "PENDING"
+        : order.status === OrderStatus.CANCELLED && order.cancelledBy === vendorId
+          ? "REJECTED"
+          : "APPROVED";
+
+    return {
+      ...order,
+      vendor_request_order: order.status === OrderStatus.PENDING,
+      approval_status: approvalStatus,
+      payment_status: order.paymentStatus,
+      package_summary: order.vendorPackage
+        ? {
+            name: order.vendorPackage.name,
+            tier: order.vendorPackage.tier,
+            rental_duration_days: order.vendorPackage.rentalDurationDays,
+          }
+        : null,
+      add_ons: meta.add_ons ?? {},
+      pricing: this.buildPricingFromOrder(order),
+    };
+  }
+
   private async requireVendorOrder(vendorId: string, orderIdOrNumber: string) {
     const orderIdResolved = await resolveOrderId(this.prisma, orderIdOrNumber);
     if (!orderIdResolved) throw new NotFoundException("Order not found");
@@ -1901,6 +2102,45 @@ export class OrdersService {
       throw new BadRequestException("plant_selections must include every order line");
     }
 
+    const bookingMeta =
+      order.bookingMeta && typeof order.bookingMeta === "object"
+        ? (order.bookingMeta as Record<string, unknown>)
+        : {};
+    const prefDate = bookingMeta.preferred_delivery_date;
+    const prefSlot = bookingMeta.preferred_time_slot;
+
+    const pkg = order.vendorPackageId
+      ? await this.prisma.vendorPackage.findUnique({
+          where: { id: order.vendorPackageId },
+          select: { deliverySlots: true },
+        })
+      : null;
+
+    let workflowMetaUpdate: Prisma.InputJsonValue | undefined;
+    if (prefDate != null && String(prefDate).trim() !== "") {
+      const parsed = parsePreferredTimeSlot(prefSlot);
+      if (!parsed) {
+        throw new BadRequestException(
+          "preferred_time_slot is required when preferred_delivery_date is set on the booking"
+        );
+      }
+      assertSlotAllowedByPackage(String(prefDate), parsed, pkg?.deliverySlots);
+      const existingWf =
+        order.workflowMeta && typeof order.workflowMeta === "object"
+          ? (order.workflowMeta as Record<string, unknown>)
+          : {};
+      workflowMetaUpdate = {
+        ...existingWf,
+        delivery: buildConfirmedDeliveryMeta(
+          String(prefDate),
+          parsed,
+          bookingMeta.special_instructions != null
+            ? String(bookingMeta.special_instructions)
+            : undefined
+        ),
+      } as Prisma.InputJsonValue;
+    }
+
     const updated = await this.prisma.$transaction(async (tx) => {
       for (const line of items) {
         const plant = await tx.plant.findUnique({
@@ -1928,6 +2168,7 @@ export class OrdersService {
         data: {
           status: OrderStatus.AWAITING_PAYMENT,
           vendorApprovalSelections: selections as unknown as Prisma.InputJsonValue,
+          ...(workflowMetaUpdate ? { workflowMeta: workflowMetaUpdate } : {}),
         },
         include: {
           items: { include: { plant: { include: { images: { where: { isPrimary: true }, take: 1 } } } } },
@@ -1940,7 +2181,7 @@ export class OrdersService {
       data: {
         userId: order.userId,
         title: "Order approved",
-        message: `Your order ${order.orderNumber} was approved by the nursery.`,
+        message: `Your order ${order.orderNumber} was approved by the nursery. Proceed to payment.`,
         type: NotificationType.ORDER,
         referenceType: "ORDER",
         referenceId: order.id,
@@ -1950,8 +2191,14 @@ export class OrdersService {
     return {
       ...updated,
       approval_status: "APPROVED",
+      payment_status: updated.paymentStatus,
       customer_order_tab: "Payment",
+      vendor_request_order: false,
       inventory_reserved: true,
+      confirmed_delivery: workflowMetaUpdate
+        ? (workflowMetaUpdate as Record<string, unknown>).delivery
+        : null,
+      pricing: this.buildPricingFromOrder(updated),
       reserved_items: updated.items.map((i) => ({
         plant_id: i.plantId,
         quantity: i.quantity,
@@ -2246,10 +2493,7 @@ export class OrdersService {
         package_summary: o.vendorPackage
           ? { name: o.vendorPackage.name, tier: o.vendorPackage.tier, package_id: o.vendorPackage.publicId }
           : null,
-        pricing: {
-          total_amount: Number(o.totalAmount),
-          deposit_amount: Number(o.depositAmount),
-        },
+        pricing: this.buildPricingFromOrder(o),
       }))
       .filter((o) => (tab ? o.customer_order_tab === tab : true));
 
@@ -2258,17 +2502,25 @@ export class OrdersService {
 
   /** POST /api/v1/orders/checkout/rental-booking */
   async createRentalBooking(userId: string, body: Record<string, unknown>) {
-    const nurseryId = String(body.nursery_id ?? "");
+    const nurseryRef = String(body.nursery_id ?? "");
     const packageId = String(body.package_id ?? "");
     const deliveryAddressId = String(body.delivery_address_id ?? "");
-    if (!nurseryId || !packageId || !deliveryAddressId) {
+    if (!nurseryRef || !packageId || !deliveryAddressId) {
       throw new BadRequestException("nursery_id, package_id, and delivery_address_id are required");
     }
+
+    const nursery = await this.prisma.nursery.findFirst({
+      where: {
+        OR: [{ id: nurseryRef }, { slug: nurseryRef }],
+        isActive: true,
+      },
+    });
+    if (!nursery) throw new NotFoundException("Nursery not found");
 
     const pkg = await this.prisma.vendorPackage.findFirst({
       where: {
         OR: [{ id: packageId }, { publicId: packageId }],
-        nurseryId,
+        nurseryId: nursery.id,
         isActive: true,
       },
       include: {
@@ -2307,10 +2559,19 @@ export class OrdersService {
     if (!address) throw new NotFoundException("Delivery address not found");
 
     const durationDays = Number(body.booking_duration_days ?? pkg.rentalDurationDays);
-    const subtotal = pkg.basePrice;
-    const deliveryFee = new Decimal(50);
-    const taxAmount = subtotal.times(0.05);
-    const totalAmount = subtotal.plus(deliveryFee).plus(taxAmount);
+    const pricing = computeRentalOrderPricing({
+      packageBasePrice: pkg.basePrice,
+      depositAmount: pkg.depositAmount,
+      addOns: body.add_ons,
+    });
+    const amounts = pricingToOrderAmounts(pricing);
+
+    if (body.preferred_delivery_date && body.preferred_time_slot) {
+      const parsed = parsePreferredTimeSlot(body.preferred_time_slot);
+      if (parsed) {
+        assertSlotAllowedByPackage(String(body.preferred_delivery_date), parsed, pkg.deliverySlots);
+      }
+    }
 
     const bookingMeta = {
       customer_name: body.customer_name,
@@ -2319,25 +2580,27 @@ export class OrdersService {
       delivery_address: body.delivery_address ?? address.addressLine1,
       preferred_delivery_date: body.preferred_delivery_date,
       preferred_time_slot: body.preferred_time_slot,
+      booking_duration_days: durationDays,
       special_instructions: body.special_instructions,
       add_ons: body.add_ons,
+      pricing,
     };
 
     const order = await this.prisma.order.create({
       data: {
         orderNumber: this.generateOrderNumber(),
         userId,
-        nurseryId,
+        nurseryId: nursery.id,
         vendorPackageId: pkg.id,
         deliveryAddressId: address.id,
         orderType: OrderType.RENT,
         status: OrderStatus.PENDING,
-        subtotal,
-        deliveryFee,
-        taxAmount,
+        subtotal: amounts.subtotal,
+        deliveryFee: amounts.deliveryFee,
+        taxAmount: amounts.taxAmount,
         discountAmount: new Decimal(0),
-        depositAmount: pkg.depositAmount,
-        totalAmount,
+        depositAmount: amounts.depositAmount,
+        totalAmount: amounts.totalAmount,
         paymentMethod: body.payment_method != null ? String(body.payment_method) : null,
         notes: body.special_instructions != null ? String(body.special_instructions) : null,
         bookingMeta: bookingMeta as object,
@@ -2363,11 +2626,7 @@ export class OrdersService {
     });
 
     const windowHours = Number(process.env.ORDER_CUSTOMER_CANCEL_WINDOW_HOURS ?? 8) || 8;
-    const nursery = await this.prisma.nursery.findUnique({
-      where: { id: nurseryId },
-      select: { vendorId: true },
-    });
-    if (nursery?.vendorId) {
+    if (nursery.vendorId) {
       await this.prisma.notification.create({
         data: {
           userId: nursery.vendorId,
@@ -2395,6 +2654,9 @@ export class OrdersService {
       order_id: order.id,
       inventory_reserved: false,
       vendor_request_order: true,
+      approval_status: "PENDING",
+      payment_status: order.paymentStatus,
+      pricing: this.buildPricingFromOrder(order),
     };
   }
 

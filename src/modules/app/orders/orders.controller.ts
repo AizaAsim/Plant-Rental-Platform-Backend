@@ -33,6 +33,10 @@ import {
   vendorRejectOrderApiBody,
   vendorCompleteReturnApiBody,
   vendorInitiateReturnApiBody,
+  rentalBookingApiBody,
+  vendorApproveOrderApiBody,
+  vendorProcessOrderApiBody,
+  customerCancelOrderApiBody,
 } from "./order-workflow.swagger";
 import { JwtAuthGuard } from "../auth/guard/jwt-auth.guard";
 import { RolesGuard } from "../auth/guard/roles.guard";
@@ -73,6 +77,7 @@ export class OrdersController {
   @ApiBearerAuth()
   @HttpCode(HttpStatus.CREATED)
   @ApiOperation({ summary: "Create rental booking order from vendor package" })
+  @ApiBody(rentalBookingApiBody)
   async createRentalBooking(@Request() req, @Body() body: Record<string, unknown>) {
     return this.ordersService.createRentalBooking(req.user.id, body);
   }
@@ -350,6 +355,7 @@ export class OrdersController {
     description: "Order cancelled successfully",
   })
   @ApiResponse({ status: 400, description: "Order cannot be cancelled" })
+  @ApiBody(customerCancelOrderApiBody)
   async cancelOrder(
     @Request() req,
     @Param("order_id") orderId: string,
@@ -571,6 +577,7 @@ export class OrdersController {
   @ApiBearerAuth()
   @ApiOperation({ summary: "Approve order with plant_selections[]" })
   @ApiParam({ name: "order_id" })
+  @ApiBody(vendorApproveOrderApiBody)
   async vendorApproveOrder(
     @Request() req,
     @Param("order_id") orderId: string,
@@ -586,6 +593,7 @@ export class OrdersController {
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: "Send order to processing (after payment confirmed)" })
   @ApiParam({ name: "order_id" })
+  @ApiBody(vendorProcessOrderApiBody)
   async vendorProcessOrder(@Request() req, @Param("order_id") orderId: string) {
     return this.ordersService.vendorProcessOrder(req.user.id, orderId);
   }

@@ -347,3 +347,90 @@ export const customerReturnResponseApiBody: ApiBodyOptions = {
     },
   },
 };
+
+export const rentalBookingApiBody: ApiBodyOptions = {
+  description:
+    "Creates order with status PENDING and vendor_request_order=true. Customer picks delivery date + slot up front — no SLOT_PROPOSED step when vendor approves.",
+  schema: {
+    type: "object",
+    required: ["nursery_id", "package_id", "delivery_address_id", "selected_plants"],
+    properties: {
+      nursery_id: { type: "string", description: "Nursery UUID or slug" },
+      package_id: { type: "string", description: "Vendor package UUID or public id (vp-…)" },
+      delivery_address_id: { type: "string", format: "uuid" },
+      selected_plants: {
+        type: "array",
+        items: {
+          type: "object",
+          required: ["plant_id", "quantity"],
+          properties: {
+            plant_id: { type: "string", format: "uuid" },
+            quantity: { type: "integer", minimum: 1 },
+          },
+        },
+      },
+      preferred_delivery_date: { type: "string", example: "2026-06-15" },
+      preferred_time_slot: { type: "string", example: "09:00-17:00" },
+      booking_duration_days: { type: "integer" },
+      customer_name: { type: "string" },
+      customer_phone: { type: "string" },
+      area: { type: "string" },
+      special_instructions: { type: "string" },
+      add_ons: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            id: { type: "string" },
+            name: { type: "string" },
+            price: { type: "number" },
+            quantity: { type: "integer" },
+          },
+        },
+      },
+      payment_method: { type: "string" },
+    },
+  },
+};
+
+export const vendorApproveOrderApiBody: ApiBodyOptions = {
+  description:
+    "Reserves inventory and moves order to AWAITING_PAYMENT. If bookingMeta has preferred_delivery_date + preferred_time_slot, slot is confirmed (no SLOT_PROPOSED).",
+  schema: {
+    type: "object",
+    required: ["plant_selections"],
+    properties: {
+      plant_selections: {
+        type: "array",
+        minItems: 1,
+        items: {
+          type: "object",
+          required: ["order_item_id", "plant_id"],
+          properties: {
+            order_item_id: { type: "string", format: "uuid" },
+            plant_id: { type: "string", format: "uuid" },
+          },
+        },
+      },
+    },
+  },
+};
+
+export const vendorProcessOrderApiBody: ApiBodyOptions = {
+  description: "No body required. Order must be CONFIRMED with paymentStatus PAID.",
+  required: false,
+  schema: { type: "object", properties: {} },
+};
+
+export const customerCancelOrderApiBody: ApiBodyOptions = {
+  schema: {
+    type: "object",
+    properties: {
+      reason: { type: "string", minLength: 3, maxLength: 2000 },
+      cancellation_reason: { type: "string", description: "Alias of reason" },
+    },
+  },
+  examples: {
+    default: { summary: "Cancel with reason", value: { reason: "Changed plans" } },
+  },
+};
